@@ -1,0 +1,53 @@
+# ---------- dependencies ----------
+node_modules/
+.npm/
+.pnp
+.pnp.js
+
+# ---------- build output ----------
+dist/
+build/
+*.tsbuildinfo
+
+# ---------- environment / secrets ----------
+.env
+.env.*
+!.env.example
+
+# ---------- runtime data (JSON datastore; migrated to PostgreSQL in Phase 2) ----------
+server/.data/
+.data/
+
+# ---------- logs ----------
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ---------- test / coverage output ----------
+coverage/
+.nyc_output/
+
+# ---------- tooling caches ----------
+.cache/
+.vite/
+.eslintcache
+.eslintcache
+
+# ---------- browser-automation output ----------
+playwright-report/
+test-results/
+recordings/*.webm
+recordings/*.png
+
+# ---------- editor / OS ----------
+.vscode/*
+!.vscode/settings.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# ---------- misc ----------
+*.pid
+*.seed
+npm-debug.log*

@@ -1,0 +1,18 @@
+{
+  "name": "healthcare-appointment-platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Patient-centric healthcare appointment platform - prototype (React + Express)",
+  "scripts": {
+    "install:all": "cd server && npm install && cd ../client && npm install",
+    "dev": "concurrently -n server,client -c cyan,magenta \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "cd server && npm run dev",
+    "dev:client": "cd client && npm run dev",
+    "build": "cd client && npm run build",
+    "start": "cd server && npm start"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "playwright": "^1.63.0"
+  }
+}
