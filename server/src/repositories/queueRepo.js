@@ -162,4 +162,41 @@ export const occupancy = async (slotId, tx = null) => {
   );
 };
 
-export default { listForDoctor, findByAppointment, join, setState, clearForAppointment, occupancy };
+/**
+ * Batched active-queue lookup for a set of appointments.
+ *
+ * Returns Map<appointmentId, position> for entries that still represent a live
+ * place in the queue (`waiting` or `in-consultation`). A `completed` or `left`
+ * entry is terminal: the visit already happened or the patient left, so there is
+ * no position to report and none is invented here.
+ *
+ * Deliberately ONE query for the whole page: the list endpoint would otherwise
+ * issue a lookup per row. Ids go through a bound array parameter, never into the
+ * SQL text.
+ *
+ * @param {string[]} appointmentIds
+ * @returns {Promise<Map<string, number>>}
+ */
+export const positionsForAppointments = async (appointmentIds) => {
+  const ids = [...new Set((appointmentIds || []).filter(Boolean))];
+  if (!ids.length) return new Map();
+
+  const result = await rows(
+    `SELECT q.appointment_id, q.position
+       FROM queue_entries q
+      WHERE q.appointment_id = ANY($1::text[])
+        AND q.state IN ('waiting', 'in-consultation')`,
+    [ids],
+  );
+  return new Map(result.map((r) => [r.appointment_id, r.position]));
+};
+
+export default {
+  listForDoctor,
+  findByAppointment,
+  positionsForAppointments,
+  join,
+  setState,
+  clearForAppointment,
+  occupancy,
+};

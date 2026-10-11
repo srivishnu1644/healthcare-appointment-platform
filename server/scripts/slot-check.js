@@ -846,11 +846,40 @@ const availabilityChecks = async () => {
   );
 
   const rangeVideo = await call(`/doctors/${ctx.ME}/availability?range=1&days=7&mode=video`);
-  const videoDays = new Set((await call(`/doctors/${ctx.ME}/slots?mode=video&futureOnly=true`)).data.slots.map((s) => s.date));
+  // `futureOnly` alone would include slots that are already booked, which the
+  // range reports as `available: 0`. The comparable set is therefore the
+  // BOOKABLE slots of that mode: still free, and not yet started.
+  const bookableVideo = new Set(
+    (await call(`/doctors/${ctx.ME}/slots?mode=video&status=available&futureOnly=true`)).data.slots
+      .map((s) => s.date),
+  );
+
+  // The two endpoints answer different questions, so they are compared over the
+  // same window and on the same footing.
+  //
+  //   * `slots?futureOnly=true` is `starts_at > now()`: slots a patient could
+  //     still turn up for. A day whose every slot has already started drops out.
+  //   * the availability range lists a day that still HAS slots, and reports
+  //     `available: 0` when they are all taken.
+  //
+  // So a day can legitimately be in the range and absent from the slot list -
+  // today, late in the day, is exactly that case. What must hold is the promise
+  // the range actually makes: a day is only advertised as available when a
+  // future video slot exists on it, and every such day is inside the window.
+  const rangeDates = rangeVideo.data.days.map((d) => d.date);
+  const openDays = rangeVideo.data.days
+    .filter((d) => d.available > 0)
+    .map((d) => d.date);
+  check(
+    "a day advertised as available really has a future slot in that mode",
+    openDays.every((d) => bookableVideo.has(d)),
+    `open=${JSON.stringify(openDays)} bookableVideo=${JSON.stringify([...bookableVideo])}`,
+  );
+  const bookableInWindow = [...bookableVideo].filter((d) => rangeDates.includes(d));
   check(
     "a mode filter narrows the availability range",
-    rangeVideo.data.days.every((d) => videoDays.has(d.date)),
-    JSON.stringify(rangeVideo.data.days.map((d) => d.date)),
+    bookableInWindow.length === openDays.length && openDays.every((d) => bookableInWindow.includes(d)),
+    `range=${JSON.stringify(rangeDates)} open=${JSON.stringify(openDays)} bookableInWindow=${JSON.stringify(bookableInWindow)}`,
   );
 
   // The two ways of asking for the range must agree.

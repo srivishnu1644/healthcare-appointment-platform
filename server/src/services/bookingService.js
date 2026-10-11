@@ -281,7 +281,20 @@ export const book = async ({
     const facility = await facilities.findById(slot.facility_id ?? doctor.facilityId, tx);
     const queued = await enqueueNotifications({
       event: "appointment_booked",
-      appointment: { id: appointmentId, patientName: patient.name, fee: slot.fee },
+      // The template renders `date` and `startTime`, so the appointment has to
+      // carry them: passing only id/patientName/fee produced "confirmed for
+      // undefined at undefined". The values come from the slot row already
+      // locked above, which derives them in the business timezone, so the
+      // message states the same time the booking did. Nothing extra is read or
+      // written, and the transaction boundary is unchanged.
+      appointment: {
+        id: appointmentId,
+        patientName: patient.name,
+        fee: slot.fee,
+        date: slot.date,
+        startTime: slot.start_time,
+        facilityName: facility?.name ?? undefined,
+      },
       doctor,
       facility,
       patient: { id: patientId, name: patient.name, phone: patient.phone, email: patient.email },

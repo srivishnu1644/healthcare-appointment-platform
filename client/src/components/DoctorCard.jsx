@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "../api/client";
+import useDoctorSlots from "../hooks/useDoctorSlots.js";
 import { Avatar, StatusBadge, EmptyState, Spinner, Alert } from "./ui.jsx";
+import { isBookableSlot } from "../utils/appointments";
 import { useToast } from "../context/ToastContext.jsx";
 import {
   currency,
@@ -69,68 +71,100 @@ export function DoctorCard({ doctor, showMatch }) {
 }
 
 /* ------------------------------------------------------------------ *
- *  BookingPanel — date tabs + slot picker + confirm                  *
+ *  BookingPanel — date tabs + slot picker + review + confirmation       *
+ *                                                                       *
+ *  The review step existed before Phase 7; this improves it rather than   *
+ *  replacing it: the summary now names the doctor, spells out the whole   *
+ *  window, and shows the facility and fee. What changed most is around    *
+ *  it, not inside it:                                                    *
+ *                                                                       *
+ *  * Availability is asked for as `status=available&futureOnly=true`, so  *
+ *    the server does the filtering. The panel used to fetch every slot   *
+ *    and filter on `status` alone, which let a slot that had already      *
+ *    started be picked and then rejected by the API with SLOT_IN_PAST.    *
+ *    `isBookableSlot` re-checks on the client using `startsAt`, as a      *
+ *    second line of defence — it decides what is OFFERED, never what is    *
+ *    ALLOWED.                                                            *
+ *  * A success panel replaces the toast-only outcome, built from the       *
+ *    appointment the API actually returned, with a link to it.           *
+ *  * The confirm button is disabled while submitting and re-guarded in     *
+ *    the handler, so a double click cannot create two bookings.           *
+ *                                                                       *
+ *  `doctor` is optional and only enriches the review text.                *
  * ------------------------------------------------------------------ */
-export function BookingPanel({ doctorId, onBooked }) {
+export function BookingPanel({ doctorId, doctor, onBooked }) {
   const toast = useToast();
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const { slots, loading, error, refresh } = useDoctorSlots(doctorId, {
+    status: "available",
+    futureOnly: true,
+  });
   const [date, setDate] = useState(null);
   const [slot, setSlot] = useState(null);
   const [reason, setReason] = useState("");
-  const [mode, setMode] = useState("in-person");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
+  const [bookError, setBookError] = useState(null);
+  // The appointment the API actually created. Until this is set there is no
+  // success state: nothing is shown as booked before the server says so.
+  const [booked, setBooked] = useState(null);
 
-  const load = async (selectedDate) => {
-    try {
-      const res = await api.doctorSlots(doctorId);
-      setData(res);
-      // Default to the first date that actually has availability.
-      const firstOpen =
-        selectedDate ||
-        res.dates.find((d) =>
-          res.slots.some((s) => s.date === d && s.status === "available"),
-        ) ||
-        res.dates[0];
-      setDate(firstOpen);
-      setError(null);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const bookable = useMemo(() => slots.filter((s) => isBookableSlot(s)), [slots]);
+  const dates = useMemo(
+    () => [...new Set(bookable.map((s) => s.date))].sort(),
+    [bookable],
+  );
 
+  const slotsForDate = useMemo(
+    () => bookable.filter((s) => s.date === date),
+    [bookable, date],
+  );
+
+  // Default to the first date that actually has availability, and keep the
+  // patient's choice when the calendar refreshes.
   useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doctorId]);
+    if (!dates.length) return;
+    if (date && dates.includes(date)) return;
+    setDate(dates[0]);
+  }, [dates, date]);
 
-  const slotsForDate = (data?.slots || []).filter((s) => s.date === date);
-  const freeSlots = slotsForDate.filter((s) => s.status === "available");
-
-  // Reset the picked slot whenever the date or mode changes.
-  useEffect(() => setSlot(null), [date, mode]);
+  // A picked slot belongs to the date it was picked from.
+  useEffect(() => {
+    setSlot((current) => (current && current.date === date ? current : null));
+  }, [date]);
 
   const grouped = {
-    "in-person": freeSlots.filter((s) => s.mode === "in-person"),
-    video: freeSlots.filter((s) => s.mode === "video"),
+    "in-person": slotsForDate.filter((s) => s.mode === "in-person"),
+    video: slotsForDate.filter((s) => s.mode === "video"),
   };
 
   const submit = async () => {
-    if (!slot) return;
+    // Re-checked here, not only on the button: a second click that lands while
+    // the first request is in flight must not start a second booking.
+    if (!slot || busy) return;
     setBusy(true);
+    setBookError(null);
     try {
-      await api.book({ doctorId, slotId: slot.id, reason, mode: slot.mode });
-      toast.success("Appointment booked — confirmation sent");
+      const res = await api.book({
+        doctorId,
+        slotId: slot.id,
+        reason,
+        mode: slot.mode,
+      });
+      setBooked(res?.appointment || null);
       setReason("");
       setSlot(null);
-      await load(date);
+      toast.success("Appointment booked");
+      // Refresh so the slot list reflects what was just taken.
+      await refresh();
       onBooked?.();
     } catch (err) {
-      toast.error(err.message);
-      setError(err.message);
+      setBookError(err?.message || "Could not book this appointment");
+      toast.error(err?.message || "Could not book this appointment");
+      // A conflict means the slot list is stale; pull the current one so the
+      // option that just failed is no longer offered.
+      if (["SLOT_TAKEN", "PATIENT_CLASH", "SLOT_IN_PAST", "SLOT_BLOCKED"].includes(err?.code)) {
+        await refresh();
+        setSlot(null);
+      }
     } finally {
       setBusy(false);
     }
@@ -147,8 +181,71 @@ export function BookingPanel({ doctorId, onBooked }) {
     );
   }
 
-  if (error && !data) {
+  if (error && !slots.length) {
     return <Alert tone="danger">{error}</Alert>;
+  }
+
+  /* ---------------- booked ---------------- */
+  if (booked) {
+    return (
+      <div className="stack">
+        <Alert tone="success" title="Appointment booked">
+          Your visit with {booked.doctorName} on{" "}
+          <strong>{formatDay(booked.date)}</strong> at{" "}
+          <strong>
+            {formatTime(booked.startTime)}
+            {booked.endTime ? ` – ${formatTime(booked.endTime)}` : ""}
+          </strong>{" "}
+          is confirmed.
+          {booked.mode === "video" ? " It is a video consultation." : ""}
+        </Alert>
+
+        <div className="row row-wrap" style={{ gap: "0.5rem" }}>
+          {booked.id && (
+            <Link
+              to={`/appointments/${booked.id}`}
+              className="btn btn-primary btn-sm"
+            >
+              View appointment
+            </Link>
+          )}
+          <Link to="/appointments" className="btn btn-secondary btn-sm">
+            My appointments
+          </Link>
+          <Link to="/doctors" className="btn btn-ghost btn-sm">
+            Find another doctor
+          </Link>
+        </div>
+
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          style={{ alignSelf: "flex-start" }}
+          onClick={() => {
+            setBooked(null);
+            setDate(null);
+          }}
+        >
+          Book another slot
+        </button>
+      </div>
+    );
+  }
+
+  /* ---------------- nothing available ---------------- */
+  if (!dates.length) {
+    return (
+      <EmptyState
+        icon="🗓️"
+        title="No upcoming availability"
+        message="This doctor has no open slots you can book right now. Check back later or find someone else."
+        action={
+          <Link to="/doctors" className="btn btn-primary btn-sm">
+            Find a doctor
+          </Link>
+        }
+      />
+    );
   }
 
   return (
@@ -158,10 +255,8 @@ export function BookingPanel({ doctorId, onBooked }) {
         className="row"
         style={{ gap: "0.4rem", overflowX: "auto", paddingBottom: 4 }}
       >
-        {(data?.dates || []).map((d) => {
-          const open = (data.slots || []).filter(
-            (s) => s.date === d && s.status === "available",
-          ).length;
+        {dates.map((d) => {
+          const open = bookable.filter((s) => s.date === d).length;
           return (
             <button
               key={d}
@@ -170,6 +265,7 @@ export function BookingPanel({ doctorId, onBooked }) {
                 "btn btn-sm",
                 date === d ? "btn-primary" : "btn-secondary",
               )}
+              aria-pressed={date === d}
               style={{
                 flexDirection: "column",
                 gap: 0,
@@ -194,7 +290,7 @@ export function BookingPanel({ doctorId, onBooked }) {
       {slotsForDate.length === 0 ? (
         <EmptyState
           icon="🗓️"
-          title="No slots on this day"
+          title="No open slots on this day"
           message="Pick another date to see availability."
         />
       ) : (
@@ -203,7 +299,9 @@ export function BookingPanel({ doctorId, onBooked }) {
             <span className="small muted">
               {formatDay(date)} · {relativeDay(date)}
             </span>
-            <span className="small bold">{freeSlots.length} available</span>
+            <span className="small bold">
+              {slotsForDate.length} available
+            </span>
           </div>
 
           {["in-person", "video"]
@@ -216,7 +314,14 @@ export function BookingPanel({ doctorId, onBooked }) {
                 >
                   {m === "video" ? "Video consultation" : "In person"}
                 </div>
-                <div className="row row-wrap" style={{ gap: "0.4rem" }}>
+                <div
+                  className="row row-wrap"
+                  style={{ gap: "0.4rem" }}
+                  role="group"
+                  aria-label={
+                    m === "video" ? "Video consultation slots" : "In-person slots"
+                  }
+                >
                   {grouped[m].map((s) => (
                     <button
                       key={s.id}
@@ -225,6 +330,7 @@ export function BookingPanel({ doctorId, onBooked }) {
                         "btn btn-sm",
                         slot?.id === s.id ? "btn-primary" : "btn-secondary",
                       )}
+                      aria-pressed={slot?.id === s.id}
                       onClick={() => setSlot(s)}
                     >
                       {formatTime(s.startTime)}
@@ -236,7 +342,12 @@ export function BookingPanel({ doctorId, onBooked }) {
         </>
       )}
 
-      {/* confirm */}
+      {/* Kept OUTSIDE the review block on purpose. A conflict clears the
+          selection (the slot is gone), and an error shown only while a slot is
+          selected would vanish at the exact moment the patient needs to read it. */}
+      {bookError && <Alert tone="danger">{bookError}</Alert>}
+
+      {/* ---------------- review + confirm ---------------- */}
       {slot && (
         <div
           className="stack-sm"
@@ -246,15 +357,56 @@ export function BookingPanel({ doctorId, onBooked }) {
           }}
         >
           <div className="alert alert-info">
-            <span>📅</span>
+            <span aria-hidden="true">📅</span>
             <div>
-              <strong>
-                {formatDay(slot.date)} at {formatTime(slot.startTime)}
-              </strong>
-              <div className="small">
-                {slot.mode === "video" ? "Video consultation" : "In person"} ·{" "}
-                {currency(slot.fee)}
-              </div>
+              <strong>Review your appointment</strong>
+              <dl
+                className="small"
+                style={{
+                  margin: "0.35rem 0 0",
+                  display: "grid",
+                  gridTemplateColumns: "auto 1fr",
+                  gap: "0.15rem 0.6rem",
+                }}
+              >
+                <dt className="muted">Doctor</dt>
+                <dd style={{ margin: 0 }}>
+                  {doctor?.name || "Selected doctor"}
+                  {doctor?.specialtyName ? (
+                    <span className="muted"> · {doctor.specialtyName}</span>
+                  ) : null}
+                </dd>
+
+                <dt className="muted">Date</dt>
+                <dd style={{ margin: 0 }}>
+                  {formatDay(slot.date)} · {relativeDay(slot.date)}
+                </dd>
+
+                <dt className="muted">Time</dt>
+                <dd style={{ margin: 0 }}>
+                  {formatTime(slot.startTime)}
+                  {slot.endTime ? ` – ${formatTime(slot.endTime)}` : ""}
+                </dd>
+
+                <dt className="muted">Mode</dt>
+                <dd style={{ margin: 0 }}>
+                  {slot.mode === "video" ? "Video consultation" : "In person"}
+                </dd>
+
+                {doctor?.facilityName && (
+                  <>
+                    <dt className="muted">Facility</dt>
+                    <dd style={{ margin: 0 }}>{doctor.facilityName}</dd>
+                  </>
+                )}
+
+                {slot.fee ? (
+                  <>
+                    <dt className="muted">Fee</dt>
+                    <dd style={{ margin: 0 }}>{currency(slot.fee)}</dd>
+                  </>
+                ) : null}
+              </dl>
             </div>
           </div>
 
@@ -266,8 +418,9 @@ export function BookingPanel({ doctorId, onBooked }) {
               id="reason"
               className="input"
               placeholder="e.g. Chest discomfort for 2 weeks"
-              value={reason}
               maxLength={500}
+              value={reason}
+              disabled={busy}
               onChange={(e) => setReason(e.target.value)}
             />
           </div>
@@ -278,26 +431,20 @@ export function BookingPanel({ doctorId, onBooked }) {
             onClick={submit}
             disabled={busy}
           >
-            {busy ? <Spinner /> : "Confirm booking"}
+            {busy ? (
+              <>
+                <Spinner /> Booking…
+              </>
+            ) : (
+              "Confirm booking"
+            )}
           </button>
+          <p className="tiny muted" style={{ margin: 0 }}>
+            The slot is held only once the booking is confirmed.
+          </p>
         </div>
-      )}
-
-      {/* already booked / blocked summary */}
-      {slotsForDate.some((s) => s.status === "booked") && (
-        <p className="tiny muted">
-          {slotsForDate.filter((s) => s.status === "booked").length} slot(s)
-          already taken.
-        </p>
-      )}
-      {slotsForDate.some((s) => s.status === "blocked") && (
-        <p className="tiny muted">
-          {slotsForDate.filter((s) => s.status === "blocked").length} slot(s)
-          blocked by the provider.
-        </p>
       )}
     </div>
   );
 }
-
 export default DoctorCard;

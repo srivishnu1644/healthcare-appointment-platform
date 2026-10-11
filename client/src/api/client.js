@@ -139,6 +139,17 @@ const request = async (
     res = await fetch(`${BASE}${path}`, {
       method,
       headers,
+      // Never let the browser cache or revalidate an API response.
+      //
+      // Express emits an ETag for every JSON body, so a repeat GET of the same
+      // URL (revisiting /notifications, say) is revalidated and the server
+      // answers 304 with an empty body. `res.ok` is false for 304, so the
+      // client raised "Request failed (304)" on a perfectly healthy response,
+      // and the affected page rendered an error for data the browser actually
+      // already held. These endpoints are live data behind an Authorization
+      // header, so storing them serves no purpose; skipping the cache removes
+      // the revalidation entirely rather than papering over the empty body.
+      cache: "no-store",
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
   } catch {

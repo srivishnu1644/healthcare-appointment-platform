@@ -10,7 +10,7 @@ import { colorFrom, cx } from "../utils/format";
  * ------------------------------------------------------------------ */
 const NAV = {
   patient: [
-    { to: "/", label: "Home", end: true },
+    { to: "/dashboard", label: "Dashboard", end: true },
     { to: "/doctors", label: "Find a doctor" },
     { to: "/appointments", label: "My appointments" },
     { to: "/notifications", label: "Notifications" },
@@ -243,9 +243,16 @@ export function Header({ unread = 0 }) {
   );
 }
 
+/**
+ * Where a signed-in user of `role` belongs. This is the single source of
+ * truth for post-auth routing: the header logo, the route guards in App.jsx
+ * and the login/register redirects all defer to it. A patient lands on their
+ * own dashboard, never on the public landing page.
+ */
 export function homeFor(role) {
   if (role === "admin") return "/admin";
   if (role === "doctor") return "/provider";
+  if (role === "patient") return "/dashboard";
   return "/";
 }
 

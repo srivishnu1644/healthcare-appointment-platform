@@ -57,6 +57,19 @@ export const dayNum = (iso) => {
   return String(d.getDate());
 };
 
+/**
+ * "2026-10-05" -> "Oct"
+ *
+ * Added so date chips do not have to chop `formatDay()` up with
+ * `.split(" ")[2]`, which silently breaks if the locale format ever changes.
+ */
+export const monthShort = (iso) => {
+  if (!iso) return "";
+  const d = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("en-GB", { month: "short" });
+};
+
 /** "09:00" -> "9:00 AM" */
 export const formatTime = (hhmm) => {
   if (!hhmm) return "—";
@@ -83,13 +96,27 @@ export const formatDateTime = (ts) => {
   )}`;
 };
 
+/**
+ * "YYYY-MM-DD" as UTC midnight.
+ *
+ * Both sides of a day-count are pinned to UTC so a daylight-saving transition
+ * cannot make a "day" 23 or 25 hours long and shift the result by one. The
+ * inputs are plain calendar dates, so no timezone is being smuggled in — this
+ * is only a safe ruler for measuring the gap between two of them.
+ */
+const utcMidnight = (iso) => {
+  const [y, m, d] = String(iso).slice(0, 10).split("-").map(Number);
+  return Date.UTC(y || 1970, (m || 1) - 1, d || 1);
+};
+
+/** Whole days from `fromISO` to `toISO`; negative when `toISO` is earlier. */
+export const calendarDaysBetween = (fromISO, toISO) =>
+  Math.round((utcMidnight(toISO) - utcMidnight(fromISO)) / 86400000);
+
 /** "in 3 days" / "2 days ago" / "today" */
 export const relativeDay = (iso) => {
   if (!iso) return "";
-  const target = new Date(`${iso}T00:00:00`);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const diff = Math.round((target - today) / 86400000);
+  const diff = calendarDaysBetween(todayISO(), iso);
   if (diff === 0) return "Today";
   if (diff === 1) return "Tomorrow";
   if (diff === -1) return "Yesterday";
@@ -97,7 +124,29 @@ export const relativeDay = (iso) => {
   return `${Math.abs(diff)} days ago`;
 };
 
-export const todayISO = () => new Date().toISOString().slice(0, 10);
+/**
+ * Today's calendar date as "YYYY-MM-DD", in the *browser's* timezone.
+ *
+ * This used to be `new Date().toISOString().slice(0, 10)`, which is the date in
+ * **UTC**. That is wrong for every user whose day is not UTC: at 00:30 in India
+ * (UTC+5:30) it returns yesterday, so appointments were filed under the wrong
+ * day and the check-in button disappeared for the first five and a half hours of
+ * the morning. `toISOString()` is only correct for someone sitting on the
+ * Greenwich meridian.
+ *
+ * The local getters are used instead, so the answer always agrees with the
+ * clock on the wall in front of the user.
+ *
+ * Note this is a *display* concern. Whether an appointment is upcoming is
+ * decided by comparing `startsAt` to the current instant (see
+ * `utils/appointments.js`), never by comparing calendar dates.
+ */
+export const todayISO = () => {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${now.getFullYear()}-${month}-${day}`;
+};
 
 /** Initials for the avatar fallback: "Dr. Ananya Rao" -> "AR" */
 export const initials = (name = "") => {
@@ -137,6 +186,17 @@ export const colorFrom = (seed = "") => {
   return palette[Math.abs(hash) % palette.length];
 };
 
+/**
+ * Whether a wall-clock time on a given calendar date has passed.
+ *
+ * NOT for appointment timing. It compares two strings the clinic and the browser
+ * each rendered in their own timezone, which is the class of bug that made
+ * `todayISO` return yesterday during the first hours of an IST user's day.
+ * Whether an appointment has started is `hasStarted()` in utils/appointments.js,
+ * which compares absolute instants via the server's `startsAt`.
+ *
+ * Kept for genuinely textual cases (a clinic opening time, say).
+ */
 export const isPast = (iso, time = "23:59") =>
   new Date(`${iso}T${time}`) < new Date();
 

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useToast } from "../context/ToastContext.jsx";
+import { homeFor } from "../components/Layout.jsx";
 import { Alert, Spinner } from "../components/ui.jsx";
 
 /** One-click fill so reviewers can jump between the three roles fast. */
@@ -29,13 +30,10 @@ export default function Login() {
     try {
       const user = await login(email.trim(), password);
       toast.success(`Welcome back, ${user.name.split(" ")[0]}`);
-      const fallback =
-        user.role === "admin"
-          ? "/admin"
-          : user.role === "doctor"
-            ? "/provider"
-            : "/";
-      navigate(location.state?.from?.pathname || fallback, { replace: true });
+      // Where they were trying to reach wins; otherwise their own dashboard.
+      navigate(location.state?.from?.pathname || homeFor(user.role), {
+        replace: true,
+      });
     } catch (err) {
       setError(err.message);
     } finally {

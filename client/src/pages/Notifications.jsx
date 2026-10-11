@@ -1,5 +1,5 @@
 import { EmptyState, Loading, StatusBadge, Alert } from "../components/ui.jsx";
-import useNotifications from "../hooks/useNotifications.js";
+import { useNotifications } from "../context/NotificationsContext.jsx";
 import { formatDateTime, cx } from "../utils/format";
 
 const EVENT_ICON = {

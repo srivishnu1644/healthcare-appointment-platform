@@ -91,8 +91,19 @@ export const listAppointments = asyncHandler(async (req, res) => {
 
   const list = await appointmentRepo.list(filters);
 
+  // The caller's own queue position, for the rows that still hold one.
+  //
+  // One query for the whole page, and only ever attached to appointments this
+  // caller is already entitled to see, so it exposes nothing that the scoped
+  // list did not already contain. Rows without an active entry keep the
+  // existing `queuePosition: null` from the projection — nothing is invented.
+  const positions = await queueService.positionsForAppointments(list);
+
   return sendSuccess(res, {
-    appointments: list.map(withNames),
+    appointments: list.map((a) => ({
+      ...withNames(a),
+      queuePosition: positions.get(a.id) ?? null,
+    })),
     count: list.length,
   });
 });

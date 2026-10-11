@@ -32,11 +32,80 @@ Verify the API end-to-end (with the server running):
 
 ```bash
 cd server
-node scripts/smoke.js     # 35 assertions across auth, discovery, booking, AI, admin
+npm test              # 35 assertions across auth, discovery, booking, AI, admin
 ```
 
-> The datastore persists to `server/.data/db.json`. Delete that file to reset to
-> a fresh seed.
+> The datastore is PostgreSQL. `server/.env` points at it; see
+> `server/.env.example`. `npm run db:migrate` applies migrations and
+> `npm run db:seed` loads the demo data.
+
+---
+
+## Verifying the build
+
+Two kinds of check live here, and they need different things running.
+
+**Browser checks** drive the real production bundle with Playwright. They need
+the API up on `:5000`, a production build, and the two servers below:
+
+```bash
+# terminal 1 - the API
+cd server && npm run dev            # http://localhost:5000
+
+# terminal 2 - the production preview (the app the browser checks drive)
+cd client && npx vite preview --port 4173
+
+# terminal 3 - the dev server, which serves the harness page only
+cd client && npx vite dev --port 5174
+```
+
+Then, from the repository root:
+
+| Command | What it covers |
+| --- | --- |
+| `npm run test:client` | Hooks, notifications, directory, dashboard, appointment card, detail, booking, reschedule, lazy routes, error boundary |
+| `npm run test:routing` | Route guards, per-role landing pages, redirects, direct loads and refreshes |
+| `npm run test:walkthrough` | A full click-through of the patient journey, with screenshots |
+| `npm test` | All three of the above, in that order |
+
+Both browser runners honour `APP_URL`, `HARNESS_URL` and `TZ`. `test:client`
+additionally needs `HARNESS_URL` on the **dev** server, because only the dev
+server transforms JSX for `checks.html`.
+
+**Backend suites** run against the API on `:5000` from `server/`:
+
+| Command | What it covers |
+| --- | --- |
+| `npm --prefix server run test` | Smoke: auth, discovery, booking, AI, admin |
+| `npm --prefix server run test:auth` | Registration, sign-in, refresh rotation |
+| `npm --prefix server run test:security` | Authorization and input handling |
+| `npm --prefix server run test:directory` | Doctor directory and filters |
+| `npm --prefix server run test:slots` | Slots, availability, timezone |
+| `npm --prefix server run test:appointments` | Booking, conflicts, lifecycle, check-in |
+| `npm --prefix server run test:queue` | Queue positions, ordering, authorization |
+| `npm --prefix server run test:schema` | Migrations are applied and consistent |
+| `npm --prefix server run test:all` | Schema, queue and appointment suites |
+
+`test:queue` checks patients in through the real endpoint. A queue entry only
+exists for a slot that has already started, so when the seed happens to leave
+none check-in-able it opens a slot in the next free window and waits for it;
+`QUEUE_CHECK_MAX_WAIT_MS` bounds that wait, and the checks are **skipped with a
+printed reason** rather than silently passing if the bound is exceeded.
+
+**Re-running.** `test:appointments` and `test:slots` insert real rows, so they
+remove their own fixtures when they finish (and on the crash path too). That
+makes them repeatable against the same database. The auth rate limiter counts
+logins per process, so restart the API between heavy suites if you see 429s.
+
+The suites that assert seed invariants (`test:schema`) want a database that has
+not been used by the others, so point `DATABASE_URL` at a fresh one:
+
+```bash
+createdb medicare_schema_verify
+DATABASE_URL=... node server/src/db/migrate.js
+DATABASE_URL=... node server/src/db/seed.js
+DATABASE_URL=... npm --prefix server run test:schema
+```
 
 ---
 

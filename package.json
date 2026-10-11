@@ -9,7 +9,12 @@
     "dev:server": "cd server && npm run dev",
     "dev:client": "cd client && npm run dev",
     "build": "cd client && npm run build",
-    "start": "cd server && npm start"
+    "start": "cd server && npm start",
+    "test": "npm run test:client && npm run test:routing && npm run test:walkthrough",
+    "test:client": "node scripts/hook-checks.mjs",
+    "test:routing": "node scripts/routing-check.mjs",
+    "test:walkthrough": "node scripts/ui-walkthrough.mjs",
+    "test:backend": "npm --prefix server run test:all"
   },
   "devDependencies": {
     "concurrently": "^8.2.2",

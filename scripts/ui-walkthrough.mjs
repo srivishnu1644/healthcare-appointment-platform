@@ -64,21 +64,48 @@ const slug = (s) =>
     .replace(/^-|-$/g, "")
     .slice(0, 50);
 
-/** Sign in through the real login form using the demo-fill shortcut. */
+/**
+ * Sign in through the real login form using the demo-fill shortcut.
+ *
+ * Both waits matter. `networkidle` only says the network went quiet — a
+ * sign-in is a SPA transition, so it can resolve before the router has moved
+ * and before the session has been stored. Waiting on the URL is what actually
+ * makes the next navigation safe.
+ */
 async function loginAs(page, label, email, password) {
   await page.goto(`${BASE}/login`, { waitUntil: "networkidle" });
-  await page.getByRole("button", { name: label, exact: true }).click();
+  const demo = page.getByRole("button", { name: label, exact: true });
+  // A still-signed-in session is bounced off /login by the guest guard, so the
+  // form never renders. Say so plainly rather than timing out on a click.
+  await demo
+    .waitFor({ timeout: 10000 })
+    .catch(() => {
+      throw new Error(
+        `the sign-in form never rendered for "${label}" (landed on ` +
+          `${new URL(page.url()).pathname}); a previous sign-out probably did not finish`,
+      );
+    });
+  await demo.click();
   const emailVal = await page.locator("#email").inputValue();
   if (emailVal !== email)
     throw new Error(`demo fill mismatch: got ${emailVal}, want ${email}`);
   await page.locator("#password").fill(password);
   await page.getByRole("button", { name: "Sign in" }).click();
-  await page.waitForLoadState("networkidle");
+  await page
+    .waitForFunction(() => !location.pathname.startsWith("/login"), { timeout: 20000 })
+    .catch(() => {});
+  await page.waitForLoadState("networkidle").catch(() => {});
 }
 
 const signOut = async (page) => {
   await page.getByRole("button", { name: "Sign out" }).first().click();
-  await page.waitForLoadState("networkidle");
+  // Sign-out is a SPA transition too: waiting on the network alone can leave the
+  // session alive, and the next `goto('/login')` is then bounced to the
+  // dashboard by the guest guard.
+  await page
+    .waitForFunction(() => location.pathname === "/login", { timeout: 20000 })
+    .catch(() => {});
+  await page.waitForLoadState("networkidle").catch(() => {});
 };
 
 const run = async () => {
@@ -217,11 +244,26 @@ const run = async () => {
 
   await step(ctx, page, "Provider schedule dashboard", async () => {
     await loginAs(page, "Doctor", "doctor1@demo.com", "doctor123");
-    await page.waitForTimeout(1200);
+    // The authenticated route is the real signal that sign-in landed. No sleep.
     await page
-      .getByRole("heading", { name: /schedule|provider|today/i })
+      .waitForFunction(() => location.pathname === "/provider", { timeout: 20000 })
+      .catch(() => {});
+    if (new URL(page.url()).pathname !== "/provider") {
+      throw new Error(`expected the provider dashboard, landed on ${page.url()}`);
+    }
+    // Readiness is the dashboard's own content once the schedule has loaded: the
+    // provider's name as the page heading, then the slots section. The old wait
+    // was a 1.2s sleep followed by /schedule|provider|today/i, which incidental
+    // text could satisfy while the page was still empty, and which timed out
+    // whenever the dashboard had not finished loading.
+    await page
+      .getByRole("heading", { level: 1, name: /Dr\./ })
       .first()
-      .waitFor();
+      .waitFor({ timeout: 30000 });
+    await page
+      .getByRole("heading", { name: /Today's slots/i })
+      .first()
+      .waitFor({ timeout: 30000 });
   });
 
   await step(ctx, page, "Sign out and reach login", async () => {

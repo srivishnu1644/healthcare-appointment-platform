@@ -157,6 +157,20 @@ const stopServer = async () => {
  * ------------------------------------------------------------------ */
 
 const TODAY = time.todayLocal();
+// The business timezone the slot repositories label rows with, so the date and
+// time read back here are exactly the ones the notification template rendered.
+const TZ = process.env.APP_TIMEZONE || "Asia/Kolkata";
+
+// Every fixture account belongs to one run.
+//
+// These rows used to reuse fixed emails across runs, which made the suite
+// re-runnable only once: each run leaves 30-minute slots on the shared fixture
+// doctors, and the next run's slots, positioned around the new "now", overlap
+// them and trip `slots_no_doctor_overlap`. The shared patients accumulate
+// appointments for the same reason, which then collide with the next run's
+// bookings under the patient no-overlap rule. Scoping the accounts to a run id
+// gives each run clean, uncontended fixtures without weakening any assertion.
+const RUN_ID = Date.now().toString(36);
 /**
  * The local date `n` days from today, in the business timezone.
  *
@@ -193,7 +207,17 @@ const minutesOf = (hhmm) => {
   return h * 60 + m;
 };
 
-const fx = { created: new Set(), usedSlots: new Set() };
+const fx = {
+  created: new Set(),
+  usedSlots: new Set(),
+  madeSlots: new Set(),
+  madeUsers: new Set(),
+  madeDoctors: new Set(),
+  slotDoctor: new Map(),
+};
+
+/** The provider that owns a fixture slot, so a booking names the right doctor. */
+const ownerOf = (slotId) => fx.slotDoctor.get(slotId) ?? fx.doctorId;
 
 /**
  * Insert a fixture slot, stepping forward until it does not clash.
@@ -212,9 +236,13 @@ const insertSlot = async (db, spec) => {
 
   // Only windows that fit ENTIRELY within the day are usable. Continuing past
   // midnight would wrap the end time round to a smaller value and ask
-  // tstzrange for a lower bound above its upper bound.
+  // tstzrange for a lower bound above its upper bound. The bound is strict for
+  // the same reason: a window ending exactly AT midnight is arithmetically
+  // allowed here, but `addMinutes` reduces 1440 to 0, so 23:00 + 60 becomes
+  // 00:00 and the range runs backwards. That was only reachable late in a fully
+  // booked day, once every earlier shift had already clashed.
   const firstStart = minutesOf(from);
-  for (let shift = 0; firstStart + shift * duration + duration <= 1440; shift += 1) {
+  for (let shift = 0; firstStart + shift * duration + duration < 1440; shift += 1) {
     const startTime = addMinutes(from, shift * duration);
     const endTime = addMinutes(startTime, duration);
     const startS = at(date, startTime);
@@ -237,6 +265,8 @@ const insertSlot = async (db, spec) => {
        RETURNING id`,
       [doctorId, facilityId, startS, endS, mode, status, fee, maxQueue],
     );
+    fx.slotDoctor.set(r.rows[0].id, doctorId);
+    fx.madeSlots.add(r.rows[0].id);
     return { id: r.rows[0].id, startTime, endTime };
   }
   throw new Error(
@@ -288,6 +318,8 @@ const insertOverlappingSlot = async (db, { doctorId, facilityId, date, baseStart
        RETURNING id`,
       [doctorId, facilityId, at(date, from), at(date, to)],
     );
+    fx.slotDoctor.set(r.rows[0].id, doctorId);
+    fx.madeSlots.add(r.rows[0].id);
     return { id: r.rows[0].id, startTime: from, endTime: to };
   }
   throw new Error(`no free window overlapping ${baseStart}-${baseEnd} on ${date}`);
@@ -323,119 +355,43 @@ const buildFixtures = async () => {
     );
     fx.otherDoctorId = doc2.rows[0].id;
 
+    // Hashing is imported here because the fixture providers below are created
+    // before the patient fixtures that used to introduce it.
+    const { hashPassword } = await import("../src/utils/password.js");
+    const specialty = await db.query(`SELECT id FROM specialties ORDER BY slug LIMIT 1`);
+    const doctorPw = await hashPassword("doctor123");
+    const makeFixtureDoctor = async (tag) => {
+      const email = `fixture-${tag}-${RUN_ID}@phase6.test`;
+      const u = await db.query(
+        `INSERT INTO users (email, password_hash, role, full_name, phone)
+         VALUES ($1, $2, 'doctor', $3, $4)
+         ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash
+         RETURNING id`,
+        [email, doctorPw, `Dr. Fixture ${tag}`, `+9192${tag.padStart(3, "0")}${RUN_ID.slice(-6)}`],
+      );
+      const d = await db.query(
+        `INSERT INTO doctors (user_id, specialty_id, facility_id, consultation_fee,
+                              experience_years, seed_rating, seed_review_count)
+         VALUES ($1, $2, $3, 700, 5, 4.5, 10)
+         ON CONFLICT (user_id) DO UPDATE SET facility_id = EXCLUDED.facility_id
+         RETURNING id`,
+        [u.rows[0].id, specialty.rows[0].id, fx.facilityId],
+      );
+      // Remember the exact rows, so cleanup removes these and nothing else.
+      fx.madeUsers.add(u.rows[0].id);
+      fx.madeDoctors.add(d.rows[0].id);
+      return d.rows[0].id;
+    };
+    fx.doctorPast = await makeFixtureDoctor("past");
+    fx.doctorNow = await makeFixtureDoctor("now");
+    fx.doctorFuture = await makeFixtureDoctor("future");
+    fx.doctorCapacity = await makeFixtureDoctor("capacity");
+    fx.doctorPositions = await makeFixtureDoctor("positions");
+
     const own = { doctorId: fx.doctorId, facilityId: fx.facilityId };
 
     // Yesterday: bookable-looking but in the past.
     fx.pastSlot = (await insertSlot(db, { ...own, date: dayOffset(-1), from: "12:00" })).id;
-
-    // Today: a video slot with a distinctive fee, so the reschedule test can
-    // prove the fee and mode are taken from the NEW slot.
-    const pricey = await insertSlot(db, {
-      ...own, date: TODAY, from: "18:00", mode: "video", fee: 4321, maxQueue: 3,
-    });
-    fx.priceySlot = pricey.id;
-    fx.priceyStart = pricey.startTime;
-
-    // A dedicated pair for the patient-overlap test, so it does not consume
-    // `priceySlot`, which the reschedule test needs to start from.
-    //
-    // The two slots deliberately belong to DIFFERENT doctors. A patient holding
-    // two overlapping appointments can only happen across doctors, because
-    // `slots_no_doctor_overlap` forbids one doctor from having two overlapping
-    // slots in the first place - so overlapping same-doctor slots cannot be
-    // constructed, even as a fixture.
-    // The base slot is deliberately 60 minutes wide rather than 30. An
-    // overlapping slot placed inside a 30-minute window would itself run into the
-    // seeded slots on either side, so the inserter would have nowhere legal to put
-    // it. A wider base leaves room for a 30-minute overlap strictly inside it.
-    const overlapBase = await insertSlot(db, {
-      ...own, date: TODAY, from: "13:00", duration: 60, fee: 999, maxQueue: 3,
-    });
-    fx.overlapBaseSlot = overlapBase.id;
-    fx.overlapBaseDoctor = fx.doctorId;
-
-    const overlapping = await insertOverlappingSlot(db, {
-      doctorId: fx.otherDoctorId,
-      facilityId: fx.facilityId,
-      date: TODAY,
-      baseStart: overlapBase.startTime,
-      baseEnd: overlapBase.endTime,
-    });
-    fx.overlapSlot = overlapping.id;
-    fx.overlapSlotDoctor = fx.otherDoctorId;
-    fx.overlapWindow = `${overlapBase.startTime}-${overlapBase.endTime} vs ${overlapping.startTime}-${overlapping.endTime}`;
-
-    // Today, cheap: the other half of the re-pricing comparison.
-    const cheap = await insertSlot(db, { ...own, date: TODAY, from: "19:00", fee: 111, maxQueue: 3 });
-    fx.cheapSlot = cheap.id;
-    fx.cheapStart = cheap.startTime;
-
-    // Blocked, for the blocked-booking refusal.
-    fx.blockedSlot = (
-      await insertSlot(db, { ...own, date: TODAY, from: "20:00", status: "blocked", maxQueue: 3 })
-    ).id;
-
-    // Owned by the OTHER doctor, for the doctor-mismatch refusals. Two of them:
-    // the authorization tests book one, and the reschedule test needs a free one
-    // to prove the doctor check fires before the slot-taken check.
-    const other = { doctorId: fx.otherDoctorId, facilityId: fx.facilityId };
-    fx.foreignSlot = (await insertSlot(db, { ...other, date: dayOffset(3), from: "12:00", fee: 700, maxQueue: 3 })).id;
-    fx.foreignSlotSpare = (await insertSlot(db, { ...other, date: dayOffset(5), from: "12:00", fee: 700, maxQueue: 3 })).id;
-
-    // Two back-to-back, non-overlapping slots on one day: the control proving an
-    // adjacent booking is allowed where an overlapping one is not.
-    const adjA = await insertSlot(db, { ...own, date: dayOffset(3), from: "12:00", fee: 700, maxQueue: 3 });
-    fx.adjacentA = adjA.id;
-    fx.adjacentDate = dayOffset(3);
-    fx.adjacentB = (
-      await insertSlot(db, { ...own, date: dayOffset(3), from: adjA.endTime, fee: 700, maxQueue: 3 })
-    ).id;
-
-    // Accounts for the concurrency race.
-    //
-    // The race needs one identity per competing request, and the seed provides
-    // three patients. These are created HERE rather than by adding them to the
-    // seed: they exist only to make a booking race expressible, they live only in
-    // the test database, and changing the shared seed to serve one test would be
-    // the wrong trade. Passwords are hashed with the application's own helper.
-    const { hashPassword } = await import("../src/utils/password.js");
-    const raceHash = await hashPassword("race123");
-    for (let i = 0; i < 20; i += 1) {
-      const email = `race${String(i + 1).padStart(2, "0")}@phase6.test`;
-      await db.query(
-        `INSERT INTO users (email, password_hash, role, full_name, phone)
-         VALUES ($1, $2, 'patient', $3, $4)
-         ON CONFLICT (email) DO NOTHING`,
-        [email, raceHash, `Race Patient ${i + 1}`, `+91 9000${String(i).padStart(6, "0")}`],
-      );
-    }
-    const raceUsers = await db.query(
-      `SELECT id, email FROM users WHERE email LIKE 'race%@phase6.test' ORDER BY email`,
-    );
-    fx.raceEmails = raceUsers.rows.map((r) => r.email);
-
-    // Accounts for the check-in tests.
-    //
-    // These start with NO appointments at all, which matters: the fixtures below
-    // sit at controlled instants around "now", and any seeded or previously booked
-    // appointment could overlap them, which would fail the patient no-overlap
-    // constraint and make the result depend on the seeded data rather than on the
-    // rule under test.
-    const checkinHash = raceHash;
-    for (let i = 0; i < 3; i += 1) {
-      const email = `checkin${String(i + 1).padStart(2, "0")}@phase6.test`;
-      await db.query(
-        `INSERT INTO users (email, password_hash, role, full_name, phone)
-         VALUES ($1, $2, 'patient', $3, $4)
-         ON CONFLICT (email) DO NOTHING`,
-        [email, checkinHash, `Check In Patient ${i + 1}`, `+91 9100${String(i).padStart(6, "0")}`],
-      );
-    }
-    const ciUsers = await db.query(
-      `SELECT email FROM users WHERE email LIKE 'checkin%@phase6.test' ORDER BY email`,
-    );
-    fx.checkinEmails = ciUsers.rows.map((r) => r.email);
-
     // A dedicated fixture doctor per check-in slot.
     //
     // The fixtures must sit at controlled instants around "now", so they land on
@@ -451,32 +407,143 @@ const buildFixtures = async () => {
     //
     // One doctor per fixture sidesteps both: overlap is per doctor, so these can
     // never conflict with the seed or with each other, at any hour.
-    const specialty = await db.query(`SELECT id FROM specialties ORDER BY slug LIMIT 1`);
-    const doctorPw = await hashPassword("doctor123");
-    const makeFixtureDoctor = async (tag) => {
-      const email = `fixture-${tag}@phase6.test`;
-      const u = await db.query(
+
+
+    // Today: a video slot with a distinctive fee, so the reschedule test can
+    // prove the fee and mode are taken from the NEW slot.
+    //
+    // On this run's own provider rather than the shared demo doctor, whose day
+    // is filled by the seed and which every run would otherwise leave a slot
+    // behind on. The cheap slot below is created on this SAME provider, because
+    // an appointment may only be rescheduled within its own doctor's calendar -
+    // giving the two slots different providers would turn the reschedule check
+    // into a cross-doctor move, which is refused for a different reason.
+    const pricey = await insertSlot(db, {
+      ...own, date: TODAY, from: "18:00", mode: "video", fee: 4321, maxQueue: 3,
+    });
+    fx.priceySlot = pricey.id;
+    fx.priceyStart = pricey.startTime;
+    fx.priceyDoctor = own.doctorId;
+
+    // A dedicated pair for the patient-overlap test, so it does not consume
+    // `priceySlot`, which the reschedule test needs to start from.
+    //
+    // The two slots deliberately belong to DIFFERENT doctors. A patient holding
+    // two overlapping appointments can only happen across doctors, because
+    // `slots_no_doctor_overlap` forbids one doctor from having two overlapping
+    // slots in the first place - so overlapping same-doctor slots cannot be
+    // constructed, even as a fixture.
+    // The base slot is deliberately 60 minutes wide rather than 30. An
+    // overlapping slot placed inside a 30-minute window would itself run into the
+    // seeded slots on either side, so the inserter would have nowhere legal to put
+    // it. A wider base leaves room for a 30-minute overlap strictly inside it.
+    //
+    // The base sits on this run's own fixture provider rather than the shared demo
+    // doctor. The demo provider's day is packed by the seed, and every run of this
+    // suite would leave its base slot behind there, eating the last free gap until
+    // no 60-minute window remained at all. A per-run provider arrives empty and
+    // keeps the rule under test intact: the two slots still belong to DIFFERENT
+    // doctors, which is the only way a patient can hold two overlapping
+    // appointments at all.
+    const overlapBase = await insertSlot(db, {
+      ...own, date: TODAY, from: "13:00", duration: 60, fee: 999, maxQueue: 3,
+    });
+    fx.overlapBaseSlot = overlapBase.id;
+    fx.overlapBaseDoctor = fx.doctorId;
+
+    // The overlapping half needs a provider of its own, and for the same reason:
+    // placing it on a seeded provider left a slot in the seeded lunch gap on
+    // every run until the gap was gone. It must still be a DIFFERENT provider
+    // from the base - that is the whole point of the fixture.
+    const overlapping = await insertOverlappingSlot(db, {
+      doctorId: fx.otherDoctorId,
+      facilityId: fx.facilityId,
+      date: TODAY,
+      baseStart: overlapBase.startTime,
+      baseEnd: overlapBase.endTime,
+    });
+    fx.overlapSlot = overlapping.id;
+    fx.overlapSlotDoctor = fx.otherDoctorId;
+    fx.overlapWindow = `${overlapBase.startTime}-${overlapBase.endTime} vs ${overlapping.startTime}-${overlapping.endTime}`;
+
+    // Today, cheap: the other half of the re-pricing comparison. Same provider as
+    // the pricey slot above, because that is what makes it a re-price rather
+    // than a move to another doctor.
+    const cheap = await insertSlot(db, { ...own, date: TODAY, from: "19:00", fee: 111, maxQueue: 3 });
+    fx.cheapSlot = cheap.id;
+    fx.cheapStart = cheap.startTime;
+    fx.cheapDoctor = own.doctorId;
+
+    // Blocked, for the blocked-booking refusal.
+    fx.blockedSlot = (
+      await insertSlot(db, { ...own, date: TODAY, from: "20:00", status: "blocked", maxQueue: 3 })
+    ).id;
+
+    // Owned by the OTHER doctor, for the doctor-mismatch refusals. Two of them:
+    // the authorization tests book one, and the reschedule test needs a free one
+    // to prove the doctor check fires before the slot-taken check.
+    const other = { doctorId: fx.otherDoctorId, facilityId: fx.facilityId };
+    fx.foreignSlot = (await insertSlot(db, { ...other, date: dayOffset(3), from: "12:00", fee: 700, maxQueue: 3 })).id;
+    fx.foreignSlotSpare = (await insertSlot(db, { ...other, date: dayOffset(5), from: "12:00", fee: 700, maxQueue: 3 })).id;
+
+    // Two back-to-back, non-overlapping slots on one day: the control proving an
+    // adjacent booking is allowed where an overlapping one is not.
+    //
+    // On this run's own provider: placed on the shared demo doctor, each run
+    // left these behind on the same day until that day had no room left.
+    const adjA = await insertSlot(db, { ...own, date: dayOffset(3), from: "12:00", fee: 700, maxQueue: 3 });
+    fx.adjacentA = adjA.id;
+    fx.adjacentDate = dayOffset(3);
+    fx.adjacentB = (
+      await insertSlot(db, { ...own, date: dayOffset(3), from: adjA.endTime, fee: 700, maxQueue: 3 })
+    ).id;
+
+    // Accounts for the concurrency race.
+    //
+    // The race needs one identity per competing request, and the seed provides
+    // three patients. These are created HERE rather than by adding them to the
+    // seed: they exist only to make a booking race expressible, they live only in
+    // the test database, and changing the shared seed to serve one test would be
+    // the wrong trade. Passwords are hashed with the application's own helper.
+    const raceHash = await hashPassword("race123");
+    for (let i = 0; i < 20; i += 1) {
+      const email = `race${String(i + 1).padStart(2, "0")}-${RUN_ID}@phase6.test`;
+      await db.query(
         `INSERT INTO users (email, password_hash, role, full_name, phone)
-         VALUES ($1, $2, 'doctor', $3, $4)
-         ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash
-         RETURNING id`,
-        [email, doctorPw, `Dr. Fixture ${tag}`, `+91 92${tag.padStart(3, "0")} 00000`],
+         VALUES ($1, $2, 'patient', $3, $4)
+         ON CONFLICT (email) DO NOTHING`,
+        [email, raceHash, `Race Patient ${i + 1}`, `+91 9000${String(i).padStart(6, "0")}`],
       );
-      const d = await db.query(
-        `INSERT INTO doctors (user_id, specialty_id, facility_id, consultation_fee,
-                              experience_years, seed_rating, seed_review_count)
-         VALUES ($1, $2, $3, 700, 5, 4.5, 10)
-         ON CONFLICT (user_id) DO UPDATE SET facility_id = EXCLUDED.facility_id
-         RETURNING id`,
-        [u.rows[0].id, specialty.rows[0].id, fx.facilityId],
+    }
+    const raceUsers = await db.query(
+      `SELECT id, email FROM users WHERE email LIKE 'race%-${RUN_ID}@phase6.test' ORDER BY email`,
+    );
+    fx.raceEmails = raceUsers.rows.map((r) => r.email);
+    for (const r of raceUsers.rows) fx.madeUsers.add(r.id);
+
+    // Accounts for the check-in tests.
+    //
+    // These start with NO appointments at all, which matters: the fixtures below
+    // sit at controlled instants around "now", and any seeded or previously booked
+    // appointment could overlap them, which would fail the patient no-overlap
+    // constraint and make the result depend on the seeded data rather than on the
+    // rule under test.
+    const checkinHash = raceHash;
+    for (let i = 0; i < 3; i += 1) {
+      const email = `checkin${String(i + 1).padStart(2, "0")}-${RUN_ID}@phase6.test`;
+      await db.query(
+        `INSERT INTO users (email, password_hash, role, full_name, phone)
+         VALUES ($1, $2, 'patient', $3, $4)
+         ON CONFLICT (email) DO NOTHING`,
+        [email, checkinHash, `Check In Patient ${i + 1}`, `+91 9100${String(i).padStart(6, "0")}`],
       );
-      return d.rows[0].id;
-    };
-    fx.doctorPast = await makeFixtureDoctor("past");
-    fx.doctorNow = await makeFixtureDoctor("now");
-    fx.doctorFuture = await makeFixtureDoctor("future");
-    fx.doctorCapacity = await makeFixtureDoctor("capacity");
-    fx.doctorPositions = await makeFixtureDoctor("positions");
+    }
+    const ciUsers = await db.query(
+      `SELECT id, email FROM users WHERE email LIKE 'checkin%-${RUN_ID}@phase6.test' ORDER BY email`,
+    );
+    fx.checkinEmails = ciUsers.rows.map((r) => r.email);
+    for (const r of ciUsers.rows) fx.madeUsers.add(r.id);
+
 
     // Check-in fixtures, positioned relative to the DATABASE clock.
     //
@@ -506,6 +573,8 @@ const buildFixtures = async () => {
          RETURNING id`,
         [doctorId, fx.facilityId, startMs / 1000, (startMs + durationMin * 60_000) / 1000, maxQueue],
       );
+      fx.slotDoctor.set(r.rows[0].id, doctorId);
+      fx.madeSlots.add(r.rows[0].id);
       return { id: r.rows[0].id, startMs };
     };
 
@@ -534,6 +603,9 @@ const buildFixtures = async () => {
     // patient-overlap rule cannot be tripped accidentally.
     // Two extra slots at the end are reserved for the concurrency race, so the
     // race never contends with a slot the sequential tests already booked.
+    //
+    // Each on this run's own provider, so repeated runs cannot fill a seeded
+    // day that later runs still need.
     fx.free = [];
     fx.freeMeta = [];
     for (let d = 4; d <= 16; d += 1) {
@@ -585,7 +657,10 @@ const bookSlot = async (token, slotId, extra = {}) => {
   const res = await call("/appointments", {
     method: "POST",
     token,
-    body: { doctorId: fx.doctorId, slotId, ...extra },
+    // Name the provider that actually owns the slot. Fixture slots sit on this
+    // run's own providers, so hardcoding the demo doctor would be refused with
+    // SLOT_MISMATCH before the rule under test was ever reached.
+    body: { doctorId: ownerOf(slotId), slotId, ...extra },
   });
   track(res.data?.appointment?.id, slotId);
   return res;
@@ -633,7 +708,7 @@ const bookingChecks = async () => {
   );
 
   // The slot must now be taken.
-  const afterBook = await call(`/doctors/${fx.doctorId}/slots?date=${fx.freeMeta[0].date}&futureOnly=true`);
+  const afterBook = await call(`/doctors/${ownerOf(fx.free[0])}/slots?date=${fx.freeMeta[0].date}&futureOnly=true`);
   const claimed = afterBook.data.slots.find((s) => s.id === fx.free[0]);
   check("the slot is marked booked once the appointment exists", claimed?.status === "booked", claimed?.status);
 
@@ -662,7 +737,7 @@ const bookingChecks = async () => {
     wrongDoc.status === 400 && wrongDoc.code === "SLOT_MISMATCH",
     `HTTP ${wrongDoc.status} ${wrongDoc.code}`,
   );
-  const wrongDocCheck = await call(`/doctors/${fx.doctorId}/slots?date=${fx.freeMeta[2].date}`);
+  const wrongDocCheck = await call(`/doctors/${ownerOf(fx.free[2])}/slots?date=${fx.freeMeta[2].date}`);
   check(
     "the refused booking left the slot untouched",
     wrongDocCheck.data.slots.find((s) => s.id === fx.free[2])?.status === "available",
@@ -684,7 +759,10 @@ const bookingChecks = async () => {
     );
   }
 
-  const foreignRes = await bookSlot(ctx.P2, fx.foreignSlot);
+  // Named explicitly: the point of this check is a slot owned by one provider
+  // being booked while naming a DIFFERENT one. Letting bookSlot resolve the real
+  // owner would name the right doctor and the disagreement never happens.
+  const foreignRes = await bookSlot(ctx.P2, fx.foreignSlot, { doctorId: fx.doctorId });
   check(
     "refuses a slot belonging to another doctor when the doctorId disagrees",
     foreignRes.status === 400 && foreignRes.code === "SLOT_MISMATCH",
@@ -700,14 +778,30 @@ const bookingChecks = async () => {
 
   /* ---- patient cannot hold two overlapping appointments ---- */
 
-  const overlapBase = await bookSlot(ctx.P2, fx.overlapBaseSlot);
+  // Both sides of this check use this run's appointment-free fixture patients.
+  // A seeded demo account carries its own visits across the working day, so it
+  // can already hold something at this time and be refused by the very rule this
+  // section is trying to demonstrate.
+  const signInFixturePatient = async (index) => {
+    const r = await call("/auth/login", {
+      method: "POST",
+      body: { email: (fx.checkinEmails ?? [])[index], password: "race123" },
+    });
+    return r.data?.token ?? null;
+  };
+  const clashPatient = await signInFixturePatient(0);
+  const controlPatient = await signInFixturePatient(1);
+  check("appointment-free fixture patients are available for the overlap checks",
+    Boolean(clashPatient && controlPatient));
+
+  const overlapBase = await bookSlot(clashPatient, fx.overlapBaseSlot);
   check("a second patient books a slot", overlapBase.status === 201, `HTTP ${overlapBase.status} ${overlapBase.code}`);
 
   // Different doctor, overlapping time, same patient: the scenario the exclusion
   // constraint exists to prevent.
   const clash = await call("/appointments", {
     method: "POST",
-    token: ctx.P2,
+    token: clashPatient,
     body: { doctorId: fx.overlapSlotDoctor, slotId: fx.overlapSlot },
   });
   check(
@@ -720,7 +814,7 @@ const bookingChecks = async () => {
   // proves the refusal above is about the patient, not about the slot.
   const otherPatientSameTime = await call("/appointments", {
     method: "POST",
-    token: ctx.P3,
+    token: controlPatient,
     body: { doctorId: fx.overlapSlotDoctor, slotId: fx.overlapSlot },
   });
   track(otherPatientSameTime.data?.appointment?.id, fx.overlapSlot);
@@ -749,7 +843,7 @@ const authorizationChecks = async () => {
 
   const anon = await call("/appointments", {
     method: "POST",
-    body: { doctorId: fx.doctorId, slotId: fx.free[3] },
+    body: { doctorId: ownerOf(fx.free[3]), slotId: fx.free[3] },
   });
   check("an unauthenticated booking is refused", anon.status === 401, `HTTP ${anon.status}`);
 
@@ -865,7 +959,7 @@ const cancellationChecks = async () => {
   );
   check("cancelled_at is stamped", Boolean(r.data?.appointment?.cancelledAt));
 
-  const released = await call(`/doctors/${fx.doctorId}/slots?date=${fx.freeMeta[1].date}`);
+  const released = await call(`/doctors/${ownerOf(fx.free[1])}/slots?date=${fx.freeMeta[1].date}`);
   check(
     "cancelling releases the slot back to available",
     released.data.slots.find((s) => s.id === fx.free[1])?.status === "available",
@@ -919,7 +1013,7 @@ const cancellationChecks = async () => {
     patched.data?.appointment?.cancelledBy === "provider",
     patched.data?.appointment?.cancelledBy,
   );
-  const releasedViaStatus = await call(`/doctors/${fx.doctorId}/slots?date=${fx.freeMeta[5].date}`);
+  const releasedViaStatus = await call(`/doctors/${ownerOf(fx.free[5])}/slots?date=${fx.freeMeta[5].date}`);
   check(
     "cancelling through PATCH /status ALSO releases the slot",
     releasedViaStatus.data.slots.find((s) => s.id === fx.free[5])?.status === "available",
@@ -1025,7 +1119,17 @@ const transitionChecks = async () => {
 const rescheduleChecks = async () => {
   console.log("\n=== Rescheduling ===\n");
 
-  const booked = await bookSlot(ctx.P2, fx.priceySlot);
+  // Booked as one of this run's appointment-free fixture patients: a seeded
+  // demo account can already hold a visit at this time and be refused by the
+  // patient no-overlap rule, which has nothing to do with re-pricing.
+  const rescheduleSession = await call("/auth/login", {
+    method: "POST",
+    body: { email: (fx.checkinEmails ?? [])[2], password: "race123" },
+  });
+  const reschedulePatient = rescheduleSession.data?.token ?? null;
+  check("an appointment-free fixture patient is available for the reschedule checks",
+    Boolean(reschedulePatient));
+  const booked = await bookSlot(reschedulePatient, fx.priceySlot);
   const id = booked.data?.appointment?.id;
   check(
     "the appointment to reschedule was booked at the slot's price",
@@ -1039,7 +1143,7 @@ const rescheduleChecks = async () => {
 
   const same = await call(`/appointments/${id}/reschedule`, {
     method: "PATCH",
-    token: ctx.P2,
+    token: reschedulePatient,
     body: { slotId: fx.priceySlot },
   });
   check(
@@ -1050,7 +1154,7 @@ const rescheduleChecks = async () => {
 
   const moved = await call(`/appointments/${id}/reschedule`, {
     method: "PATCH",
-    token: ctx.P2,
+    token: reschedulePatient,
     body: { slotId: fx.cheapSlot },
   });
   check("rescheduling onto a free slot succeeds", moved.status === 200, `HTTP ${moved.status} ${moved.code}`);
@@ -1072,7 +1176,9 @@ const rescheduleChecks = async () => {
     `${movedAppt.date} ${movedAppt.startTime}, wanted ${TODAY} ${fx.cheapStart}`,
   );
 
-  const slotsToday = await call(`/doctors/${fx.doctorId}/slots?date=${TODAY}`);
+  // The re-pricing slots live on this run's fixture provider, so the slot states
+  // are read from that provider rather than the demo doctor.
+  const slotsToday = await call(`/doctors/${fx.priceyDoctor}/slots?date=${TODAY}`);
   check(
     "the old slot is released after a reschedule",
     slotsToday.data.slots.find((s) => s.id === fx.priceySlot)?.status === "available",
@@ -1086,7 +1192,7 @@ const rescheduleChecks = async () => {
 
   const intoPast = await call(`/appointments/${id}/reschedule`, {
     method: "PATCH",
-    token: ctx.P2,
+    token: reschedulePatient,
     body: { slotId: fx.pastSlot },
   });
   check(
@@ -1097,7 +1203,7 @@ const rescheduleChecks = async () => {
 
   const intoBlocked = await call(`/appointments/${id}/reschedule`, {
     method: "PATCH",
-    token: ctx.P2,
+    token: reschedulePatient,
     body: { slotId: fx.blockedSlot },
   });
   check(
@@ -1108,7 +1214,7 @@ const rescheduleChecks = async () => {
 
   const intoTaken = await call(`/appointments/${id}/reschedule`, {
     method: "PATCH",
-    token: ctx.P2,
+    token: reschedulePatient,
     body: { slotId: fx.free[0] },
   });
   check(
@@ -1119,7 +1225,7 @@ const rescheduleChecks = async () => {
 
   const intoForeign = await call(`/appointments/${id}/reschedule`, {
     method: "PATCH",
-    token: ctx.P2,
+    token: reschedulePatient,
     body: { slotId: fx.foreignSlotSpare },
   });
   check(
@@ -1130,13 +1236,13 @@ const rescheduleChecks = async () => {
 
   const noSlot = await call(`/appointments/${id}/reschedule`, {
     method: "PATCH",
-    token: ctx.P2,
+    token: reschedulePatient,
     body: {},
   });
   check("rescheduling with no slotId is rejected by validation", noSlot.status === 422, `HTTP ${noSlot.status}`);
 
   // The appointment must be untouched by all those refusals.
-  const stillThere = await call(`/appointments/${id}`, { token: ctx.P2 });
+  const stillThere = await call(`/appointments/${id}`, { token: reschedulePatient });
   check(
     "none of the refused reschedules moved the appointment",
     stillThere.data?.appointment?.slotId === fx.cheapSlot,
@@ -1151,14 +1257,34 @@ const rescheduleChecks = async () => {
 const queueChecks = async () => {
   console.log("\n=== Queue and check-in ===\n");
 
+  // These use the appointment-free fixture patients, not the demo accounts.
+  //
+  // The capacity and positions slots sit at controlled instants around "now",
+  // and the demo patients carry seeded appointments across the working day. The
+  // patient no-overlap rule is real and must not be bypassed, so booking one of
+  // those slots as a demo patient could be refused with PATIENT_CLASH whenever
+  // a seeded visit happens to overlap - which made the result depend on the
+  // seed and the clock rather than on the queue rule under test.
+  fx.checkinTokens = [];
+  for (const email of (fx.checkinEmails ?? []).slice(0, 3)) {
+    const r = await call("/auth/login", { method: "POST", body: { email, password: "race123" } });
+    fx.checkinTokens.push(r.data?.token ?? null);
+  }
+  const qFirst = fx.checkinTokens[0];
+  const qSecond = fx.checkinTokens[1];
+  check("appointment-free fixture patients are available for the queue checks",
+    Boolean(qFirst && qSecond));
+
   // Capacity 1: first patient in, second refused.
-  const a1 = await bookWith(ctx.P, fx.doctorCapacity, fx.capacitySlot);
+  const a1 = await bookWith(qFirst, fx.doctorCapacity, fx.capacitySlot);
   const a1id = a1.data?.appointment?.id;
-  const first = await call(`/appointments/${a1id}/check-in`, { method: "POST", token: ctx.P });
+  check("the first patient can book the capacity slot",
+    a1.status === 201, `HTTP ${a1.status} ${a1.code}`);
+  const first = await call(`/appointments/${a1id}/check-in`, { method: "POST", token: qFirst });
   check("the first patient checks in", first.status === 200, `HTTP ${first.status} ${first.code}`);
   check("the first patient is at position 1", first.data?.queuePosition === 1, String(first.data?.queuePosition));
 
-  const repeat = await call(`/appointments/${a1id}/check-in`, { method: "POST", token: ctx.P });
+  const repeat = await call(`/appointments/${a1id}/check-in`, { method: "POST", token: qFirst });
   check(
     "checking in twice is idempotent, not an error",
     repeat.status === 200 && repeat.data?.queuePosition === 1,
@@ -1172,12 +1298,12 @@ const queueChecks = async () => {
   // verified directly against the database in the post-API phase, with two
   // patients waiting on one max_queue=1 slot.
 
-  const a2real = await bookWith(ctx.P2, fx.doctorPositions, fx.positionsSlot);
+  const a2real = await bookWith(qSecond, fx.doctorPositions, fx.positionsSlot);
   check("a second patient books a different slot", a2real.status === 201, `HTTP ${a2real.status}`);
 
   const positions = await call(`/appointments/${a2real.data.appointment.id}/check-in`, {
     method: "POST",
-    token: ctx.P2,
+    token: qSecond,
   });
   check("a second patient checks in", positions.status === 200, `HTTP ${positions.status} ${positions.code}`);
   check(
@@ -1186,12 +1312,6 @@ const queueChecks = async () => {
     String(positions.data?.queuePosition),
   );
   fx.secondQueueAppointment = a2real.data.appointment.id;
-
-  fx.checkinTokens = [];
-  for (const email of (fx.checkinEmails ?? []).slice(0, 3)) {
-    const r = await call("/auth/login", { method: "POST", body: { email, password: "race123" } });
-    fx.checkinTokens.push(r.data?.token ?? null);
-  }
 
   /* ---- the documented rule: refuse until the slot has STARTED ---- */
 
@@ -1300,7 +1420,7 @@ const queueChecks = async () => {
   // Cancelling must clear the queue entry.
   const cancelQueued = await call(`/appointments/${a1id}/cancel`, {
     method: "PATCH",
-    token: ctx.P,
+    token: qFirst,
   });
   check("a queued appointment can still be cancelled", cancelQueued.status === 200, `HTTP ${cancelQueued.status}`);
 
@@ -1387,10 +1507,10 @@ const transactionChecks = async () => {
   console.log("\n=== Transactions ===\n");
 
   const target = fx.free[9];
-  const before = await call(`/doctors/${fx.doctorId}/slots?date=${fx.freeMeta[9].date}`);
+  const before = await call(`/doctors/${ownerOf(fx.free[9])}/slots?date=${fx.freeMeta[9].date}`);
   const beforeState = before.data.slots.find((s) => s.id === target)?.status;
 
-  const after = await call(`/doctors/${fx.doctorId}/slots?date=${fx.freeMeta[9].date}`);
+  const after = await call(`/doctors/${ownerOf(fx.free[9])}/slots?date=${fx.freeMeta[9].date}`);
   const afterState = after.data.slots.find((s) => s.id === target)?.status;
   check(
     "a refused booking attempt leaves the slot exactly as it was",
@@ -1824,6 +1944,51 @@ const databaseChecks = async () => {
     );
     check("booking writes a notification", notifiedBooking.rows[0].c > 0, `${notifiedBooking.rows[0].c}`);
 
+      // The rendered body must state the real date and time.
+      //
+      // The booking path built its notification from a hand-assembled object
+      // ({id, patientName, fee}) while the template renders `date` and
+      // `startTime`, so every new booking notification read
+      // "confirmed for undefined at undefined". The fix passes the locked slot's
+      // own date and time through, so the message agrees with the booking.
+      //
+      // Only notifications created by THIS run are inspected; historical rows are
+      // left exactly as they are.
+      const bookedBodies = await db.query(
+        `SELECT n.body,
+                  EXISTS (
+                    SELECT 1 FROM slots s2
+                     WHERE s2.doctor_id = a.doctor_id
+                       AND to_char(s2.starts_at AT TIME ZONE $2, 'YYYY-MM-DD')
+                           = substring(n.body from 'confirmed for (\\d{4}-\\d{2}-\\d{2})')
+                       AND to_char(s2.starts_at AT TIME ZONE $2, 'HH24:MI')
+                           = substring(n.body from ' at (\\d{2}:\\d{2})')
+                  ) AS names_a_real_slot
+             FROM notifications n
+             JOIN appointments a ON a.id = n.appointment_id
+            WHERE n.event = 'appointment_booked'
+              AND n.appointment_id = ANY($1::text[])`,
+        [mine, TZ],
+      );
+      check("this run's booking notifications were found for inspection",
+        bookedBodies.rows.length > 0, `${bookedBodies.rows.length}`);
+      check("no booking notification from this run contains 'undefined'",
+        bookedBodies.rows.every((r) => !/undefined/i.test(r.body)),
+        JSON.stringify(bookedBodies.rows.map((r) => r.body).slice(0, 2)));
+      check("every booking notification states a date and a start time",
+        bookedBodies.rows.every((r) =>
+          /confirmed for \d{4}-\d{2}-\d{2} at \d{2}:\d{2}/.test(r.body)),
+        JSON.stringify(bookedBodies.rows.map((r) => r.body).slice(0, 2)));
+      // The rendered date and time must name a real slot on that appointment's
+      // own provider. Comparing against the appointment's CURRENT slot would be
+      // wrong: a notification is a snapshot of the moment it was written, and
+      // this run also reschedules appointments, so the booking text legitimately
+      // names the slot that was booked rather than the one it moved to later.
+      check("the date and time in each booking notification name a real slot for that provider",
+        bookedBodies.rows.every((r) => r.names_a_real_slot),
+        JSON.stringify(bookedBodies.rows.filter((r) => !r.names_a_real_slot)
+          .map((r) => r.body).slice(0, 2)));
+
     // Counts both the notifications and their delivery rows, because a raw
     // `count(d.id)` grouped by event is the TOTAL across that event (39 rows for
     // 13 notifications), not a per-notification count. Comparing that total
@@ -2078,6 +2243,63 @@ const databaseChecks = async () => {
  *  Run                                                                *
  * ------------------------------------------------------------------ */
 
+/**
+ * Remove everything this run put into the database, on its own connection.
+ *
+ * Fixtures used to be permanent, so re-running the suite stacked a fresh layer
+ * on the previous one: seeded providers ran out of free window, and seeded
+ * patients accumulated bookings that made the patient no-overlap rule refuse the
+ * very fixture under test. Removing the run's own rows makes the suite
+ * repeatable against the same database without weakening any assertion.
+ *
+ * Safe when there is nothing to remove, and safe to call twice.
+ */
+const cleanupAfterRun = async () => {
+  const appts = [...fx.created];
+  const slots = [...fx.madeSlots];
+  const doctors = [...fx.madeDoctors];
+  const users = [...fx.madeUsers];
+  if (!appts.length && !slots.length && !doctors.length && !users.length) return;
+
+  try {
+    await withClient(async (tx) => {
+      // Dependency order matters: appointments and slots first, because
+      // appointments holds RESTRICT references to both doctors and patients, so
+      // removing an account while one of its appointments survives would abort
+      // the whole cleanup and leave the next run with residue.
+      //
+      // Everything else hanging off these rows cascades on its own
+      // (doctor_services, doctor_languages, refresh_tokens, notifications,
+      // patient_profiles, queue_entries), so no unrelated table is touched.
+      if (appts.length || slots.length) {
+        await tx.query(
+          `DELETE FROM appointments
+            WHERE (($1::text[] <> '{}') AND id = ANY($1::text[]))
+               OR (($2::text[] <> '{}') AND slot_id = ANY($2::text[]))`,
+          [appts, slots],
+        );
+      }
+      if (slots.length) {
+        await tx.query("DELETE FROM slots WHERE id = ANY($1::text[])", [slots]);
+      }
+      // Providers before their own user accounts: doctors.user_id cascades, but
+      // being explicit keeps the order readable and makes the intent obvious.
+      if (doctors.length) {
+        await tx.query("DELETE FROM doctors WHERE id = ANY($1::text[])", [doctors]);
+      }
+      if (users.length) {
+        await tx.query("DELETE FROM users WHERE id = ANY($1::text[])", [users]);
+      }
+    });
+    console.log(
+      `      teardown removed ${appts.length} appointment(s), ${slots.length} slot(s), ` +
+        `${doctors.length} provider(s) and ${users.length} fixture account(s) this run created`,
+    );
+  } catch (err) {
+    console.log(`  teardown could not complete: ${err.message}`);
+  }
+};
+
 const run = async () => {
   console.log(`\n=== Phase 6 appointment checks (${BASE}) ===`);
   console.log(`      business timezone: ${time.TZ}`);
@@ -2113,6 +2335,17 @@ const run = async () => {
 
   await databaseChecks();
 
+  // Put the database back the way this run found it.
+  //
+  // Every fixture this suite inserts - a slot, an appointment, the queue entry
+  // and notification rows that cascade from it - was permanent. Re-running the
+  // suite therefore stacked a fresh layer on top of the last one, and after a
+  // few passes the seeded providers had no free window left and the seeded
+  // patients held bookings that made the patient no-overlap rule refuse the very
+  // fixture under test. Removing the run's own rows makes the suite repeatable
+  // against the same database without weakening a single assertion.
+  await cleanupAfterRun();
+
   console.log(`\n=== ${pass} passed, ${fail} failed, ${skipped} skipped ===`);
   if (failures.length) console.log(`\n  Failed: ${failures.join("; ")}`);
   if (skips.length) console.log(`\n  Skipped:\n${skips.map((s) => `    - ${s}`).join("\n")}`);
@@ -2125,6 +2358,10 @@ run()
   .catch(async (err) => {
     console.error(`\nAppointment checks crashed: ${err.stack || err.message}\n`);
     await stopServer();
+    // A crashed run leaves its fixtures behind, and that residue is what makes
+    // the NEXT run fail for reasons unrelated to the code under test. Clean up
+    // on the failure path too, so one failure is never contagious.
+    await cleanupAfterRun();
     process.exit(1);
   })
   .finally(async () => {

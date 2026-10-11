@@ -218,4 +218,20 @@ export const positionFor = async (appointmentId) => {
   return entry ? waitFor(entry.position) : waitFor(null);
 };
 
-export default { joinQueue, getQueue, positionFor, hasStarted };
+/**
+ * Queue positions for a whole page of appointments, in one query.
+ *
+ * This reuses the entry's stored `position` — the same number `joinQueue`
+ * returns after a check-in — rather than recomputing anything. No second queue
+ * algorithm, no counting, no allocation.
+ *
+ * @param {object[]} appointments
+ * @returns {Promise<Map<string, number>>} appointmentId -> position, only for
+ *   appointments that still hold an active queue entry.
+ */
+export const positionsForAppointments = async (appointments) => {
+  const ids = (appointments || []).map((a) => a?.id).filter(Boolean);
+  return queueRepo.positionsForAppointments(ids);
+};
+
+export default { joinQueue, getQueue, positionFor, positionsForAppointments, hasStarted };

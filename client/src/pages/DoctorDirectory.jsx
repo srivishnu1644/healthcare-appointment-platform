@@ -5,12 +5,43 @@ import { DoctorCard } from "../components/DoctorCard.jsx";
 import { EmptyState, SkeletonCard, Alert } from "../components/ui.jsx";
 import { currency, cx, num } from "../utils/format";
 
+/**
+ * Sort options offered in the UI.
+ *
+ * These keys are sent verbatim as ?sort= and are checked against an enum by the
+ * API, so every value here must be one the server accepts. The list used to
+ * include `relevance`, which the server does not implement: the request was
+ * rejected with 422 and the directory rendered nothing at all.
+ *
+ * There is no relevance ranking server-side. When `sort` is absent the API
+ * falls back to rating descending, then review count — identical to the
+ * `rating` option — so "Best match" was never anything else. Dropping it is
+ * honest; sending `rating` and labelling it "Best match" would have been a lie
+ * with two identical options.
+ *
+ * `soonest` is also accepted by the API but is not offered here yet.
+ */
 const SORTS = [
-  { key: "relevance", label: "Best match" },
   { key: "rating", label: "Highest rated" },
   { key: "fee-low", label: "Fee: low to high" },
   { key: "experience", label: "Most experienced" },
 ];
+
+const SORT_KEYS = SORTS.map((s) => s.key);
+
+/** The default ordering, which is also what the API uses when sort is absent. */
+const DEFAULT_SORT = "rating";
+
+/**
+ * Coerce any sort value into one the API accepts.
+ *
+ * Bookmarkable URLs can carry a value this build no longer offers — including
+ * `?sort=relevance` from before the fix. Sending it through unchanged would
+ * reproduce the original 422, so anything unrecognised falls back to the
+ * default rather than failing the whole request.
+ */
+const normaliseSort = (value) =>
+  SORT_KEYS.includes(value) ? value : DEFAULT_SORT;
 
 export default function DoctorDirectory() {
   const [params, setParams] = useSearchParams();
@@ -24,7 +55,7 @@ export default function DoctorDirectory() {
     language: params.get("language") || "",
     mode: params.get("mode") || "",
     acceptingOnly: params.get("acceptingOnly") === "true",
-    sort: params.get("sort") || "relevance",
+    sort: normaliseSort(params.get("sort")),
   });
 
   const [meta, setMeta] = useState({ cities: [], specialties: [] });
@@ -63,7 +94,7 @@ export default function DoctorDirectory() {
     const next = {};
     if (search) next.q = search;
     Object.entries(filters).forEach(([k, v]) => {
-      if (v && v !== "relevance" && v !== false) next[k] = String(v);
+      if (v && v !== DEFAULT_SORT && v !== false) next[k] = String(v);
     });
     setParams(next, { replace: true });
   }, [filters, search, setParams]);
@@ -83,14 +114,14 @@ export default function DoctorDirectory() {
       language: "",
       mode: "",
       acceptingOnly: false,
-      sort: "relevance",
+      sort: DEFAULT_SORT,
     });
   };
 
   const activeCount =
     Object.entries(filters).filter(
       ([k, v]) =>
-        v && v !== "relevance" && !(k === "acceptingOnly" && v === false),
+        v && v !== DEFAULT_SORT && !(k === "acceptingOnly" && v === false),
     ).length + (search ? 1 : 0);
 
   return (

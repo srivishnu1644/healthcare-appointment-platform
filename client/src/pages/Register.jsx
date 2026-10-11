@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useToast } from "../context/ToastContext.jsx";
+import { homeFor } from "../components/Layout.jsx";
 import { Alert, Spinner } from "../components/ui.jsx";
 
 export default function Register() {
@@ -25,14 +26,16 @@ export default function Register() {
     setBusy(true);
     setError(null);
     try {
-      await register({
+      const data = await register({
         name: form.name.trim(),
         email: form.email.trim(),
         password: form.password,
         phone: form.phone.trim(),
       });
       toast.success("Account created — welcome to MediCare");
-      navigate("/", { replace: true });
+      // Registration issues a session, so the new account goes straight to its
+      // own dashboard rather than the public landing page.
+      navigate(homeFor(data?.user?.role), { replace: true });
     } catch (err) {
       setError(err.message);
     } finally {

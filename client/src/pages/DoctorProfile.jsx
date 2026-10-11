@@ -23,7 +23,11 @@ export default function DoctorProfile() {
   const [tab, setTab] = useState(params.get("book") ? "book" : "overview");
 
   const load = async () => {
-    setLoading(true);
+    // Blank the page only for the FIRST load. After a booking the panel calls
+    // back to refresh the profile, and replacing the page with a full-page
+    // spinner would unmount BookingPanel — destroying the confirmation it has
+    // just been told to show. A refresh keeps what is already on screen.
+    if (!data) setLoading(true);
     try {
       const res = await api.doctor(id);
       setData(res);
@@ -258,7 +262,11 @@ export default function DoctorProfile() {
                   <h3>Book an appointment</h3>
                 </div>
                 <div className="card-body">
-                  <BookingPanel doctorId={doctor.id} onBooked={load} />
+                  <BookingPanel
+                    doctorId={doctor.id}
+                    doctor={doctor}
+                    onBooked={load}
+                  />
                 </div>
               </div>
             )}
