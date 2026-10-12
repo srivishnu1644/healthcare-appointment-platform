@@ -367,6 +367,12 @@ export default function AppointmentDetail() {
                     Your position:{" "}
                     <strong>#{wait.queuePosition}</strong>
                   </div>
+                ) : appointment?.queueState === "in-consultation" ? (
+                  // In the room, so there is no place in the line to show. The
+                  // server sends the state precisely so this is not blank.
+                  <div className="small">
+                    With the doctor now
+                  </div>
                 ) : null}
                 {wait.estimatedWaitLabel && (
                   <div className="small muted">

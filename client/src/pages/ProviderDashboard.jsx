@@ -30,6 +30,24 @@ import {
   startInstant,
   summariseDay,
 } from "../utils/appointments";
+import { useQueue, waitingPatients } from "../context/QueueContext.jsx";
+
+/**
+ * Clock time of an absolute instant, for "called at 2:05 PM".
+ *
+ * `new Date(instant)` plus the browser's own clock, so it is correct in whatever
+ * zone the browser is in. The preview this replaced sliced the ISO string
+ * (`joinedAt.slice(11, 16)`), which is the UTC time of day and was silently
+ * wrong for any clinic outside UTC.
+ */
+const formatClock = (instant) => {
+  if (!instant) return "";
+  const d = new Date(instant);
+  if (Number.isNaN(d.getTime())) return "";
+  return formatTime(
+    `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`,
+  );
+};
 
 /**
  * Mirrors `ALLOWED_TRANSITIONS` in server/src/services/bookingService.js, which
@@ -91,7 +109,6 @@ export default function ProviderDashboard() {
   const toast = useToast();
 
   const [data, setData] = useState(null);
-  const [queue, setQueue] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [tab, setTab] = useState("today");
@@ -107,10 +124,7 @@ export default function ProviderDashboard() {
   const [dayLoading, setDayLoading] = useState(false);
   const [dayError, setDayError] = useState(null);
   const [dayRetry, setDayRetry] = useState(0);
-  // The queue is refreshed on its own so a failure here can be retried without
-  // tearing down the rest of the workspace, which has already loaded.
-  const [queueRefreshing, setQueueRefreshing] = useState(false);
-  const [queueError, setQueueError] = useState(null);
+
 
   const [genOpen, setGenOpen] = useState(false);
   const [genDate, setGenDate] = useState(todayISO());
@@ -121,15 +135,49 @@ export default function ProviderDashboard() {
   // queue are fetched together rather than one after the other.
   const doctorId = user?.doctor?.id ?? null;
 
+  // One waiting room for the whole app: a single poller, a single copy of the
+  // state, one error to retry. See QueueContext for why it is a provider rather
+  // than a hook.
+  const {
+    room,
+    loading: queueLoading,
+    error: queueError,
+    refreshing: queueRefreshing,
+    refresh: queueRefresh,
+    reload: queueReload,
+  } = useQueue();
+  const [calling, setCalling] = useState(false);
+
+  // Queue entries carry no appointment time or status - the payload drops the
+  // slot start it selects - so each is paired with the appointment this page
+  // already fetched. Nothing is computed here; this only joins two payloads, and
+  // `joinQueueWithAppointments` preserves the server's own order.
+  const queueWaiting = useMemo(
+    () =>
+      joinQueueWithAppointments(waitingPatients(room), data?.appointments ?? []).map((entry) => ({
+        ...entry,
+        waited: joinedAgo(entry.joinedAt),
+      })),
+    [room, data],
+  );
+
+  // Whoever is in consultation, so the active card offers the same status
+  // actions as every other row.
+  const activeAppointment = useMemo(
+    () =>
+      (data?.appointments ?? []).find(
+        (a) => a.id === room?.activeConsultation?.appointmentId,
+      ) ?? null,
+    [data, room],
+  );
+
   const load = useCallback(async () => {
     const day = todayISO();
     try {
-      const [schedule, waitingRoom] = await Promise.all([
-        api.mySchedule({ date: day }),
-        doctorId ? api.queue({ doctorId, date: day }) : Promise.resolve(null),
-      ]);
-      setData(schedule);
-      setQueue(waitingRoom);
+      // Only the schedule is fetched here. The waiting room belongs to
+      // QueueContext, which already has a poller and its own error state;
+      // fetching it again here would be a second copy of the same data.
+      setData(await api.mySchedule({ date: day }));
       setError(null);
     } catch (err) {
       setError(err.message);
@@ -202,22 +250,12 @@ export default function ProviderDashboard() {
     // status is not: a provider may set in-progress directly, which would count
     // a patient who never arrived.
     const checkedInIds = new Set(
-      (queue?.entries ?? [])
+      (room?.entries ?? [])
         .filter((e) => e.state === "waiting" || e.state === "in-consultation")
         .map((e) => e.appointmentId),
     );
-    const day = summariseDay(data?.appointments || [], { today, checkedInIds });
-    return {
-      ...day,
-      // Queue rows paired with their appointment, in the server's own order.
-      rows: joinQueueWithAppointments(
-        queue?.entries ?? [],
-        data?.appointments || [],
-      ).map((r) => ({ ...r, waited: joinedAgo(r.joinedAt) })),
-      waitingTotal: queue?.waiting ?? 0,
-      averageWait: queue?.averageWaitMinutes ?? null,
-    };
-  }, [data, queue, today]);
+    return summariseDay(data?.appointments || [], { today, checkedInIds });
+  }, [data, room, today]);
 
   if (loading) return <Loading label="Loading your schedule…" />;
 
@@ -274,6 +312,40 @@ export default function ProviderDashboard() {
     }
   };
 
+  /**
+   * Call the next waiting patient.
+   *
+   * Guarded in two places: `calling` disables the button, and the early return
+   * covers a click that lands between the click and the re-render. The server is
+   * idempotent too, so even a retry that got through returns the same patient
+   * rather than skipping one.
+   */
+  const callNext = async () => {
+    if (calling || !doctorId) return;
+    setCalling(true);
+    try {
+      const res = await api.callNext({ doctorId, date: todayISO() });
+      const name = res?.entry?.patientName ?? "the next patient";
+      toast.success(
+        res?.promoted ? `Called ${name}` : `${name} is already in consultation`,
+      );
+      // The mutation changed the room, so read it now rather than waiting for
+      // the poller. The schedule is re-read too: a completed visit frees a slot.
+      await Promise.all([load(), queueRefresh()]);
+    } catch (err) {
+      // A room that emptied between the poll and the click is a normal outcome,
+      // not a failure worth alarming the provider about.
+      if (err?.code === "NO_WAITING_PATIENT" || err?.status === 404) {
+        toast.warning("Nobody is waiting");
+        await queueRefresh();
+      } else {
+        toast.error(err?.message || "Could not call the next patient");
+      }
+    } finally {
+      setCalling(false);
+    }
+  };
+
   const changeStatus = async (appt, status) => {
     // Guard the request itself, not only the buttons: a second click landing
     // between the click and the re-render must not send a duplicate.
@@ -282,9 +354,9 @@ export default function ProviderDashboard() {
     try {
       await api.changeStatus(appt.id, status, `Marked ${status} by doctor`);
       toast.success(`Appointment ${status}`);
-      // `load` re-reads the schedule AND the queue together, so the queue shows
-      // the new status without a second request.
-      await load();
+      // A completed or cancelled visit changes the waiting room too, so both
+      // are re-read rather than waiting for the poller.
+      await Promise.all([load(), queueRefresh()]);
     } catch (err) {
       toast.error(err.message);
     } finally {
@@ -292,25 +364,7 @@ export default function ProviderDashboard() {
     }
   };
 
-  /**
-   * Re-read the queue on its own.
-   *
-   * No polling: the queue only changes when a patient checks in or a status
-   * changes, and both already reload, so an interval would be a timer firing
-   * with nothing to do. This is the manual counterpart for everything else.
-   */
-  const refreshQueue = async () => {
-    if (!doctorId) return;
-    setQueueRefreshing(true);
-    try {
-      setQueue(await api.queue({ doctorId, date: todayISO() }));
-      setQueueError(null);
-    } catch (err) {
-      setQueueError(err.message);
-    } finally {
-      setQueueRefreshing(false);
-    }
-  };
+
 
   const generateSlots = async () => {
     const times = [
@@ -641,29 +695,51 @@ export default function ProviderDashboard() {
         </section>
 
         {/*
-          The queue, in the order the server returned it.
+          The waiting room, in the order the server returned it.
 
-          Entries are never re-sorted here and `position` is printed exactly as
-          the server reports it. A queue belongs to ONE appointment slot, and a
-          slot holds a single active appointment (bookingService.findActiveForSlot),
-          so every position is 1 - the caption says so rather than leaving the
-          number looking broken.
+          The room is (doctor_id, clinic_date): patients hold separate
+          appointment slots but wait for the same person, so their order comes
+          from when they ARRIVED. `roomPosition` is computed by the server and
+          renumbers itself when somebody leaves; it is never calculated here,
+          and the legacy per-slot `position` is not used at all.
+
+          The patient in consultation is reported separately rather than ranked,
+          so "you are 2nd" never silently changes meaning when the doctor moves on.
         */}
         <section className="card" aria-labelledby="queue-panel">
           <div className="card-head">
             <h3 id="queue-panel">Queue</h3>
             <div className="row row-wrap" style={{ gap: "0.75rem" }}>
               <span className="small muted nowrap">
-                {overview.waitingTotal} waiting
-                {overview.averageWait
-                  ? ` · ~${overview.averageWait} min average wait`
+                {room.waitingCount} waiting
+                {/* This is an ASSUMPTION, not a measurement: the API multiplies
+                    the head count by a flat 15 minutes per patient. Labelled as
+                    the assumption it is, so nobody reads it as how long the wait
+                    actually is. A real estimate would need per-visit durations. */}
+                {room.averageWaitMinutes
+                  ? ` · ~${room.averageWaitMinutes} min if each visit is 15 min`
                   : ""}
               </span>
               <button
                 type="button"
+                className="btn btn-primary btn-sm"
+                onClick={callNext}
+                disabled={calling || queueLoading || queueError !== null}
+                title={
+                  queueError
+                    ? "The waiting room could not be loaded"
+                    : room.activeConsultation
+                      ? "The current patient is still in consultation"
+                      : "Call the next waiting patient"
+                }
+              >
+                {calling ? "Calling…" : "Call next patient"}
+              </button>
+              <button
+                type="button"
                 className="btn btn-secondary btn-sm"
-                onClick={refreshQueue}
-                disabled={queueRefreshing}
+                onClick={queueRefresh}
+                disabled={queueRefreshing || calling}
               >
                 {queueRefreshing ? "Refreshing…" : "Refresh"}
               </button>
@@ -676,79 +752,114 @@ export default function ProviderDashboard() {
                 <button
                   type="button"
                   className="btn btn-secondary btn-sm"
-                  onClick={refreshQueue}
+                  onClick={queueReload}
                   disabled={queueRefreshing}
                 >
                   Retry
                 </button>
               </Alert>
-            ) : overview.rows.length === 0 ? (
-              <EmptyState
-                icon="🕒"
-                title="Nobody is waiting"
-                message="Patients appear here once they check in."
-              />
+            ) : queueLoading && !room.clinicDate ? (
+              <Loading label="Loading the waiting room…" />
             ) : (
               <>
-                <ul className="stack-sm" style={{ listStyle: "none", margin: 0, padding: 0 }}>
-                  {overview.rows.map((row) => (
-                    <li
-                      key={row.id}
-                      className="row-between row-wrap"
-                      style={{ gap: "0.5rem" }}
-                    >
+                {room.activeConsultation && (
+                  <div
+                    className="card card-pad"
+                    style={{ borderLeft: "3px solid var(--brand-500)" }}
+                  >
+                    <div className="row-between row-wrap" style={{ gap: "0.5rem" }}>
                       <div className="row row-wrap" style={{ gap: "0.6rem", minWidth: 0 }}>
-                        <span
-                          className="small bold nowrap"
-                          title="Position within this appointment's own waiting room"
-                        >
-                          #{row.position}
-                        </span>
                         <Avatar
-                          name={row.patientName}
-                          color={colorFrom(row.patientName)}
+                          name={room.activeConsultation.patientName}
+                          color={colorFrom(room.activeConsultation.patientName)}
                           size="sm"
                         />
                         <div style={{ minWidth: 0 }}>
                           <div className="row row-wrap" style={{ gap: "0.4rem" }}>
-                            <strong className="small">
-                              {row.patientName ?? "Patient"}
-                            </strong>
-                            <StatusBadge status={row.state} />
-                            {row.appointment && (
-                              <StatusBadge status={row.appointment.status} />
-                            )}
+                            <span className="tiny muted">In consultation</span>
+                            <StatusBadge status="in-consultation" />
                           </div>
-                          <div className="tiny muted">
-                            {row.appointment
-                              ? `${formatTime(row.appointment.startTime)} · ${
-                                  row.appointment.mode === "video" ? "Video" : "In person"
-                                }`
-                              : "Appointment not in this schedule"}
-                            {row.waited ? ` · checked in ${row.waited}` : ""}
-                          </div>
-                          {row.appointment?.reason && (
+                          <strong className="small">
+                            {room.activeConsultation.patientName ?? "Patient"}
+                          </strong>
+                          {room.activeConsultation.calledAt && (
                             <div className="tiny muted">
-                              Reason: {row.appointment.reason}
+                              Called {formatClock(room.activeConsultation.calledAt)}
                             </div>
                           )}
                         </div>
                       </div>
-                      {row.appointment && (
+                      {activeAppointment && (
                         <StatusActions
-                          appointment={row.appointment}
+                          appointment={activeAppointment}
                           onChange={changeStatus}
                           busy={busy}
-                          disabled={busyAppt === row.appointment.id}
+                          disabled={busyAppt === activeAppointment.id || calling}
                         />
                       )}
-                    </li>
-                  ))}
-                </ul>
-                <p className="tiny muted" style={{ margin: 0 }}>
-                  Each appointment has its own waiting room, so every position
-                  reads #1. The list is ordered by appointment time.
-                </p>
+                    </div>
+                  </div>
+                )}
+
+                {queueWaiting.length === 0 && !room.activeConsultation ? (
+                  <EmptyState
+                    icon="🕒"
+                    title="Nobody is waiting"
+                    message="Patients appear here once they check in."
+                  />
+                ) : queueWaiting.length === 0 ? (
+                  <p className="tiny muted" style={{ margin: 0 }}>
+                    Nobody else is waiting.
+                  </p>
+                ) : (
+                  <ul
+                    className="stack-sm"
+                    style={{ listStyle: "none", margin: 0, padding: 0 }}
+                  >
+                    {queueWaiting.map((row) => (
+                      <li
+                        key={row.id}
+                        className="row-between row-wrap"
+                        style={{ gap: "0.5rem" }}
+                      >
+                        <div className="row row-wrap" style={{ gap: "0.6rem", minWidth: 0 }}>
+                          <span className="small bold nowrap" title="Place in the line">
+                            #{row.roomPosition}
+                          </span>
+                          <Avatar
+                            name={row.patientName}
+                            color={colorFrom(row.patientName)}
+                            size="sm"
+                          />
+                          <div style={{ minWidth: 0 }}>
+                            <div className="row row-wrap" style={{ gap: "0.4rem" }}>
+                              <strong className="small">
+                                {row.patientName ?? "Patient"}
+                              </strong>
+                              <StatusBadge status={row.state} />
+                            </div>
+                            <div className="tiny muted">
+                              {row.appointment
+                                ? `${formatTime(row.appointment.startTime)} · ${
+                                    row.appointment.mode === "video" ? "Video" : "In person"
+                                  }`
+                                : "Appointment not in this schedule"}
+                              {row.waited ? ` · waiting ${row.waited}` : ""}
+                            </div>
+                          </div>
+                        </div>
+                        {row.appointment && (
+                          <StatusActions
+                            appointment={row.appointment}
+                            onChange={changeStatus}
+                            busy={busy}
+                            disabled={busyAppt === row.appointment.id || calling}
+                          />
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </>
             )}
           </div>

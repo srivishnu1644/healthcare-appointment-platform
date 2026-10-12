@@ -49,6 +49,7 @@ import { facilities } from "../repositories/referenceRepo.js";
 import { AppError } from "../utils/responses.js";
 import { withDbErrorMapping } from "../utils/dbErrors.js";
 import { enqueueNotifications, deliverNotification } from "./notificationService.js";
+import { roomKeyFor } from "./queueService.js";
 import * as time from "../utils/time.js";
 import logger from "../utils/logger.js";
 
@@ -341,7 +342,16 @@ export const reschedule = async ({
   newSlotId,
   note = null,
 }) => {
+  // ---- LOCK ORDER: the room's advisory lock FIRST, then the appointment row.
+  // Rescheduling, cancelling and changing status all touch the waiting room
+  // (they move or delete a queue entry). Taking only the appointment lock here
+  // would let `call next` promote an entry that one of these is concurrently
+  // finishing. The room key is read from the pool on purpose, BEFORE the
+  // transaction opens, because a pooled query inside one is refused.
+  const room = await roomKeyFor(appointmentId);
+
   const outcome = await withTransaction(async (tx) => {
+    if (room) await queueRepo.lockRoom(room.doctorId, room.clinicDate, tx);
     const appointment = await appointmentRepo.lockById(appointmentId, tx);
     if (!appointment) {
       throw new AppError("Appointment not found", 404, "APPOINTMENT_NOT_FOUND");
@@ -456,7 +466,16 @@ export const reschedule = async ({
  * audit fields, record history.
  */
 export const cancel = async ({ actor, appointmentId, reason = null }) => {
+  // ---- LOCK ORDER: the room's advisory lock FIRST, then the appointment row.
+  // Rescheduling, cancelling and changing status all touch the waiting room
+  // (they move or delete a queue entry). Taking only the appointment lock here
+  // would let `call next` promote an entry that one of these is concurrently
+  // finishing. The room key is read from the pool on purpose, BEFORE the
+  // transaction opens, because a pooled query inside one is refused.
+  const room = await roomKeyFor(appointmentId);
+
   const outcome = await withTransaction(async (tx) => {
+    if (room) await queueRepo.lockRoom(room.doctorId, room.clinicDate, tx);
     const appointment = await appointmentRepo.lockById(appointmentId, tx);
     if (!appointment) {
       throw new AppError("Appointment not found", 404, "APPOINTMENT_NOT_FOUND");
@@ -566,7 +585,16 @@ export const changeStatus = async ({
     );
   }
 
+  // ---- LOCK ORDER: the room's advisory lock FIRST, then the appointment row.
+  // Rescheduling, cancelling and changing status all touch the waiting room
+  // (they move or delete a queue entry). Taking only the appointment lock here
+  // would let `call next` promote an entry that one of these is concurrently
+  // finishing. The room key is read from the pool on purpose, BEFORE the
+  // transaction opens, because a pooled query inside one is refused.
+  const room = await roomKeyFor(appointmentId);
+
   const outcome = await withTransaction(async (tx) => {
+    if (room) await queueRepo.lockRoom(room.doctorId, room.clinicDate, tx);
     const appointment = await appointmentRepo.lockById(appointmentId, tx);
     if (!appointment) {
       throw new AppError("Appointment not found", 404, "APPOINTMENT_NOT_FOUND");
@@ -595,7 +623,14 @@ export const changeStatus = async ({
 
     if (nextStatus === "no-show") {
       await slotRepo.release(appointment.slot_id, "available", tx);
-      await queueRepo.clearForAppointment(appointmentId, tx);
+      // A no-show is a record worth keeping: the patient was in the room and
+      // then was not there, which is different from never arriving. `left` is
+      // a state this enum already had and nothing ever wrote. A patient who
+      // never checked in has no entry, so this is a no-op for them.
+      //
+      // Cancellation still removes the entry (clearForAppointment). That is
+      // existing behaviour and is deliberately left alone.
+      await queueRepo.markLeftForAppointment(appointmentId, tx);
     }
 
     await appointmentRepo.history.record(

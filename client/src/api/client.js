@@ -298,6 +298,10 @@ export const api = {
     }),
   checkIn: (id) => request(`/appointments/${id}/check-in`, { method: "POST" }),
   queue: (params) => request(`/appointments/queue${qs(params)}`),
+  // Promotes the next waiting patient. Idempotent: while someone is already in
+  // consultation the server returns that same person, so a double click or a
+  // retry cannot skip anybody.
+  callNext: (body) => request("/appointments/queue/next", { method: "POST", body }),
 
   // --- notifications ---
   notifications: () => request("/notifications"),

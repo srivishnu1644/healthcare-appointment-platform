@@ -7,21 +7,44 @@
  * updated the appointment as separate steps, so a failure between them left a
  * patient sitting in the queue for an appointment still marked "confirmed".
  *
- * Two invariants this module is responsible for:
+ * THE ROOM
+ * One waiting room per (doctor_id, clinic_date). Patients hold separate
+ * appointment slots but wait for the same person, so their order comes from when
+ * they ARRIVED. Positions are computed with row_number() over the waiting set,
+ * never stored: there is no counter to inflate (the Phase 0 finding D-B4) and no
+ * compaction to get wrong when someone leaves. The patient in consultation is
+ * excluded from the ranking and returned separately.
  *
- *   1. POSITION IS DERIVED, NEVER INCREMENTED. Every position comes from
- *      `max(position) + 1` over the entries actually waiting for that slot. There
- *      is no stored counter to bump, which is what closed the Phase 0 finding
- *      (D-B4) where a patient could inflate their own place by calling check-in
- *      repeatedly.
+ * `queue_entries.position` survives as a legacy per-slot number for older
+ * readers. It is never used to rank the room.
  *
- *   2. CAPACITY IS HONOURED. `slots.max_queue` existed but nothing read it, so a
- *      waiting room could grow without limit. It is checked here, under the slot
- *      lock, and the unique index on (slot_id, position) is the backstop.
+ * LOCKING CONTRACT (this order, everywhere)
+ *   1. the room's advisory lock  - pg_advisory_xact_lock, taken FIRST
+ *   2. the appointment row lock
+ *   3. the slot row lock
  *
- * Locking the slot row for the whole check-and-insert is what makes the capacity
- * check meaningful: without the lock, two patients arriving at the same moment
- * could both read a count of 2 against a limit of 3 and both be admitted.
+ * Why the advisory lock must come first: it is a single per-room mutex, so it is
+ * what makes "the head of the queue" a stable answer. Taken after a row lock it
+ * would invert against a path that holds that row lock and wants the room -
+ * check-in and call-next would then be able to deadlock each other.
+ *
+ * Why no deadlock exists, and will not after this:
+ *   * EVERY path that touches the room takes the advisory lock before any row
+ *     lock. That set is: check-in (joinQueue), call-next (callNext), and
+ *     reschedule / cancel / changeStatus in bookingService, each of which moves
+ *     or deletes a queue entry;
+ *   * so a transaction holding the advisory lock can only ever wait on a row
+ *     lock, and no path asks for the advisory lock after holding one;
+ *   * booking (bookingService.book) takes the slot lock and never touches the
+ *     room at all, so it cannot participate in a cycle;
+ *   * two transactions on DIFFERENT rooms use different advisory keys and never
+ *     meet.
+ *   A cycle would require some path to take a row lock and then the advisory
+ *   lock. There is none.
+ *
+ *   The advisory lock is not merely for deadlock freedom: it is also what makes
+ *   a queue mutation and a queue read agree. Without it, `call next` could
+ *   promote a patient that a completion was concurrently finishing.
  */
 import { withTransaction } from "../config/database.js";
 import appointmentRepo from "../repositories/appointmentRepo.js";
@@ -102,7 +125,29 @@ export const hasStarted = (startsAt, now = Date.now()) => {
  *                    estimatedWaitMinutes: number, estimatedWaitLabel: string}>}
  */
 export const joinQueue = async ({ actor, appointmentId }) => {
+  // Read (unlocked) only to learn WHICH ROOM this is, so the room lock can be
+  // taken first. This is safe because it cannot change between here and the
+  // lock: rescheduling requires an appointment that has NOT started
+  // (bookingService.isActionable), and check-in only happens once the slot HAS
+  // started. So an appointment that can be checked in cannot move to another
+  // slot or another clinic day.
+  const preview = await appointmentRepo.findById(appointmentId);
+  if (!preview) {
+    throw new AppError("Appointment not found", 404, "APPOINTMENT_NOT_FOUND");
+  }
+
+  // Read outside the transaction on purpose: `findById` goes to the pool, and a
+  // pooled query inside a transaction is refused. This is safe for the same
+  // reason as the read above - a slot's start instant is immutable, and the
+  // appointment cannot move to another slot before it has started.
+  const roomSlot = await slotRepo.findById(preview.slotId);
+  const clinicDate = time.localDate(roomSlot?.starts_at);
+
   const outcome = await withTransaction(async (tx) => {
+    // ---- LOCK ORDER: room advisory lock FIRST, then appointment, then slot.
+    // See the locking contract at the top of this module.
+    await queueRepo.lockRoom(preview.doctorId, clinicDate, tx);
+
     const appointment = await appointmentRepo.lockById(appointmentId, tx);
     if (!appointment) {
       throw new AppError("Appointment not found", 404, "APPOINTMENT_NOT_FOUND");
@@ -211,27 +256,146 @@ export const getQueue = async (doctorId, date) => {
 };
 
 /**
+ * Which waiting room does this appointment belong to?
+ *
+ * A POOLED read, deliberately taken outside any transaction: this is how a
+ * caller learns the room key so it can take the room's advisory lock FIRST.
+ * `lockRoom` must never be reached through a pooled query inside a transaction.
+ *
+ * The slot cannot change between this read and the lock for the paths that use
+ * it: rescheduling requires an appointment that has not started, and every
+ * queue mutation here is for one that has.
+ *
+ * @returns {Promise<{doctorId: string, clinicDate: string}|null>}
+ */
+export const roomKeyFor = async (appointmentId) => {
+  const appointment = await appointmentRepo.findById(appointmentId);
+  if (!appointment) return null;
+  const slot = await slotRepo.findById(appointment.slotId);
+  return {
+    doctorId: appointment.doctorId,
+    clinicDate: time.localDate(slot?.starts_at),
+  };
+};
+
+/**
+ * One doctor's waiting room for one clinic day.
+ *
+ * Positions are computed by the repository, so they renumber themselves the
+ * moment anyone leaves; nothing here counts, compacts, or stores a rank.
+ *
+ * @param {string} doctorId
+ * @param {string} clinicDate `YYYY-MM-DD` in the clinic's timezone
+ */
+export const getRoom = async (doctorId, clinicDate) => {
+  const entries = await queueRepo.listRoom(doctorId, clinicDate);
+  const waiting = entries.filter((e) => e.state === "waiting");
+  const activeConsultation = entries.find((e) => e.state === "in-consultation") ?? null;
+
+  return {
+    doctorId,
+    date: clinicDate,
+    clinicDate,
+    // `total` counts every entry in the room, including finished visits, so the
+    // existing field keeps its meaning.
+    total: entries.length,
+    waitingCount: waiting.length,
+    // Kept for compatibility with the existing response shape.
+    waiting: waiting.length,
+    averageWaitMinutes: waiting.length ? waiting.length * PER_PATIENT_MINUTES : 0,
+    activeConsultation,
+    entries,
+  };
+};
+
+/**
+ * Promote the next waiting patient into consultation.
+ *
+ * Idempotent by design. If someone is already with the doctor, that person IS
+ * the answer and is returned unchanged: a doctor who taps "call next" twice, or
+ * whose browser retries, must not skip a patient.
+ *
+ * Concurrency: the room advisory lock is taken first, so two simultaneous
+ * requests serialise and the second one finds the consultation already started.
+ * The partial unique index on (doctor_id, clinic_date) WHERE state =
+ * 'in-consultation' is the database backstop for anything that slips past.
+ *
+ * Appointment status is deliberately NOT touched here. Check-in already moved it
+ * to in-progress, and the lifecycle rules for a visit belong to
+ * bookingService, not to the waiting room.
+ *
+ * @returns {Promise<{entry: object, promoted: boolean}>}
+ */
+export const callNext = async ({ doctorId, clinicDate }) => {
+  const outcome = await withTransaction(async (tx) => {
+    // ---- LOCK ORDER: room advisory lock FIRST (see the locking contract).
+    await queueRepo.lockRoom(doctorId, clinicDate, tx);
+
+    const active = await queueRepo.findActiveConsultation(doctorId, clinicDate, tx);
+    if (active) return { entry: active, promoted: false };
+
+    const head = await queueRepo.headWaiting(doctorId, clinicDate, tx);
+    if (!head) {
+      throw new AppError("Nobody is waiting in this room", 404, "NO_WAITING_PATIENT");
+    }
+
+    try {
+      await queueRepo.setState(head.id, "in-consultation", tx);
+    } catch (err) {
+      // Two transactions cannot both reach here (the advisory lock), but the
+      // unique index is the real guarantee. Losing that race is a conflict, not
+      // a server fault.
+      throw new AppError(
+        "Another patient is already in consultation",
+        409,
+        "QUEUE_BUSY",
+      );
+    }
+
+    const entry = await queueRepo.findByAppointment(head.appointmentId, tx);
+    log.info(`call-next ${doctorId} @ ${clinicDate} -> ${head.patientName}`);
+    return { entry, promoted: true };
+  });
+
+  return outcome;
+};
+
+/**
  * A patient's own position for one appointment, or null if not queued.
  */
 export const positionFor = async (appointmentId) => {
   const entry = await queueRepo.findByAppointment(appointmentId);
-  return entry ? waitFor(entry.position) : waitFor(null);
+  if (!entry) return waitFor(null);
+  // The patient's real place in the ROOM, computed. The stored per-slot number
+  // is always 1 and told someone waiting behind two others that they were next.
+  const position = await queueRepo.roomPositionFor(appointmentId);
+  return waitFor(position);
 };
 
 /**
- * Queue positions for a whole page of appointments, in one query.
+ * Queue positions for a whole page of appointments, in ONE query.
  *
- * This reuses the entry's stored `position` — the same number `joinQueue`
- * returns after a check-in — rather than recomputing anything. No second queue
- * algorithm, no counting, no allocation.
+ * Now the computed room position rather than the stored per-slot number, which
+ * was always 1. Same field, honest value: a patient waiting behind two others
+ * is told 3.
  *
  * @param {object[]} appointments
- * @returns {Promise<Map<string, number>>} appointmentId -> position, only for
- *   appointments that still hold an active queue entry.
+ * @returns {Promise<Map<string, {position: number|null, state: string}>>}
+ *   appointmentId -> room position and queue state. `position` is set only for a
+ *   patient who is waiting; someone in consultation has a state but no number.
  */
 export const positionsForAppointments = async (appointments) => {
   const ids = (appointments || []).map((a) => a?.id).filter(Boolean);
-  return queueRepo.positionsForAppointments(ids);
+  return queueRepo.roomPositionsForAppointments(ids);
 };
 
-export default { joinQueue, getQueue, positionFor, positionsForAppointments, hasStarted };
+export default {
+  roomKeyFor,
+  joinQueue,
+  getQueue,
+  getRoom,
+  callNext,
+  positionFor,
+  positionsForAppointments,
+  hasStarted,
+};

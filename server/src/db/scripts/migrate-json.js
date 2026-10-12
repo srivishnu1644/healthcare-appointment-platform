@@ -572,9 +572,14 @@ const migrate = async (json) => {
     const position = (nextPositionBySlot.get(q.slotId) ?? 0) + 1;
     try {
       await query(
+        // `clinic_date` (migration 017) is NOT NULL: it names the waiting room
+        // and is derived from the slot, exactly as the repository derives it.
         `INSERT INTO queue_entries
-           (id, appointment_id, slot_id, doctor_id, patient_id, state, position, joined_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING`,
+           (id, appointment_id, slot_id, doctor_id, patient_id, state, position, joined_at, clinic_date)
+         SELECT $1,$2,$3,$4,$5,$6,$7,$8,
+                to_char(starts_at AT TIME ZONE $9, 'YYYY-MM-DD')::date
+           FROM slots WHERE id = $3
+         ON CONFLICT (id) DO NOTHING`,
         [
           q.id,
           q.appointmentId,
@@ -584,6 +589,7 @@ const migrate = async (json) => {
           q.state || "waiting",
           position,
           q.joinedAt ? new Date(q.joinedAt) : new Date(),
+          process.env.APP_TIMEZONE || "Asia/Kolkata",
         ],
       );
       nextPositionBySlot.set(q.slotId, position);

@@ -17,6 +17,9 @@
  * deleted afterwards, so this script leaves no trace.
  */
 import pg from "pg";
+// The business timezone is configuration, not a literal. slot-check asserts
+// that no SQL under src/ hardcodes a zone, and this file issues SQL.
+import { TZ as CLINIC_TZ } from "../../utils/time.js";
 
 let pass = 0;
 let fail = 0;
@@ -771,10 +774,15 @@ const constraintChecks = async () => {
       );
       const insert = () =>
         exec(
+          // `clinic_date` (migration 017) names the waiting room and is NOT NULL,
+          // so the row has to carry it. Derived from the slot, the same way the
+          // repository derives it.
           `INSERT INTO queue_entries
-             (id, appointment_id, slot_id, doctor_id, patient_id, position)
-           VALUES (gen_random_uuid()::text,$1,$2,$3,$4,1)`,
-          [a.id, a.slot_id, a.doctor_id, a.patient_id],
+             (id, appointment_id, slot_id, doctor_id, patient_id, position, clinic_date)
+           SELECT gen_random_uuid()::text,$1,$2,$3,$4,1,
+                  to_char(starts_at AT TIME ZONE $5, 'YYYY-MM-DD')::date
+             FROM slots WHERE id = $2`,
+          [a.id, a.slot_id, a.doctor_id, a.patient_id, CLINIC_TZ],
         );
 
       const first = await insert();
@@ -1228,6 +1236,8 @@ const seededDataChecks = async () => {
   await check("seed: every queue position is positive", () =>
     expectNone(`SELECT count(*)::int AS c FROM queue_entries WHERE position < 1`));
 
+  // The legacy per-slot column is still written and still constrained, because
+  // older readers depend on it. It is NOT how the room is ranked any more.
   await check("seed: no two waiting entries share a position within a slot", () =>
     expectNone(`
       SELECT count(*)::int AS c FROM (
@@ -1235,6 +1245,76 @@ const seededDataChecks = async () => {
          GROUP BY slot_id, position HAVING count(*) > 1
       ) x`),
   );
+
+  // --- the waiting room (migration 017) --------------------------------
+  await check("seed: every queue entry names its clinic date", () =>
+    expectNone(`SELECT count(*)::int AS c FROM queue_entries WHERE clinic_date IS NULL`));
+
+  await check("seed: every entry's clinic date agrees with its slot", () =>
+    expectNone(`
+      SELECT count(*)::int AS c
+        FROM queue_entries q JOIN slots sl ON sl.id = q.slot_id
+       WHERE q.clinic_date <> to_char(sl.starts_at AT TIME ZONE $1, 'YYYY-MM-DD')::date`,
+      [CLINIC_TZ]));
+
+  await check("seed: no doctor-day has two patients in consultation", () =>
+    expectNone(`
+      SELECT count(*)::int AS c FROM (
+        SELECT doctor_id, clinic_date FROM queue_entries WHERE state = 'in-consultation'
+         GROUP BY doctor_id, clinic_date HAVING count(*) > 1
+      ) x`));
+
+  // The rule itself, proved by trying to break it.
+  // The rule itself, proved by trying to break it. The fixture is built here
+  // rather than found: the seed creates no queue entries at all, so there is
+  // nothing to inherit, and a test that depended on seeded queue data would be
+  // asserting against whatever the seed happened to leave behind.
+  await withCleanup(async () => {
+    const pair = await requireOne(
+      `SELECT a1.id AS id1, a1.slot_id AS slot1, a1.patient_id AS patient1,
+              a2.id AS id2, a2.slot_id AS slot2, a2.patient_id AS patient2,
+              a1.doctor_id AS doctor,
+              to_char(s1.starts_at AT TIME ZONE $1, 'YYYY-MM-DD')::date AS clinic_date
+         FROM appointments a1
+         JOIN appointments a2 ON a1.doctor_id = a2.doctor_id
+                             AND a1.id <> a2.id AND a1.slot_id <> a2.slot_id
+         JOIN slots s1 ON s1.id = a1.slot_id
+        LIMIT 1`,
+      [CLINIC_TZ],
+      "two appointments on different slots for one doctor",
+    );
+
+    // `state` must be stated explicitly: the column defaults to 'waiting', and
+    // the index is PARTIAL on 'in-consultation', so a defaulted insert would
+    // never be in the index and the rule would silently not apply.
+    const insert = (id, slot, patient) =>
+      exec(
+        `INSERT INTO queue_entries
+           (id, appointment_id, slot_id, doctor_id, patient_id, position, state, clinic_date)
+         VALUES (gen_random_uuid()::text,$1,$2,$3,$4,1,'in-consultation',$5::date)`,
+        [id, slot, pair.doctor, patient, pair.clinic_date],
+      );
+
+    const first = await insert(pair.id1, pair.slot1, pair.patient1);
+    if (!first.ok) throw new Error(`setup insert failed: ${first.code}`);
+    onCleanup("DELETE FROM queue_entries WHERE appointment_id = ANY($1::text[])", [
+      [pair.id1, pair.id2],
+    ]);
+
+    const second = await insert(pair.id2, pair.slot2, pair.patient2);
+    if (second.ok) {
+      throw new Error("a second in-consultation entry was accepted for one doctor-day");
+    }
+    // `exec` reports the SQLSTATE, not the constraint name, so the name is
+    // confirmed from the message the way 23505 always reports it.
+    if (second.code !== "23505") {
+      throw new Error(`expected 23505, got ${second.code}`);
+    }
+    if (!/queue_one_active_consultation/.test(second.message ?? "")) {
+      throw new Error(`expected queue_one_active_consultation, got: ${second.message}`);
+    }
+    console.log("      rejected by queue_one_active_consultation as expected");
+  });
 
   await check("seed: no queue entry waits for a closed appointment", () =>
     expectNone(`

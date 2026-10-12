@@ -2195,9 +2195,16 @@ const databaseChecks = async () => {
         const nextPos =
           Math.max(0, ...before) + 1;
         await tx.query(
-          `INSERT INTO queue_entries (appointment_id, slot_id, doctor_id, patient_id, position, state)
-           VALUES ($1, $2, $3, $4, $5, 'waiting')`,
-          [spare.id, cap.id, cap.doctor_id, spare.patient_id, nextPos],
+          // `clinic_date` names the waiting room and is NOT NULL since migration
+          // 017. Derived here from the slot with the same expression the
+          // repository uses, so this fixture cannot disagree with the code path
+          // it stands in for.
+          `INSERT INTO queue_entries
+             (appointment_id, slot_id, doctor_id, patient_id, position, state, clinic_date)
+           SELECT $1, $2, $3, $4, $5, 'waiting',
+                  to_char(starts_at AT TIME ZONE $6, 'YYYY-MM-DD')::date
+             FROM slots WHERE id = $2`,
+          [spare.id, cap.id, cap.doctor_id, spare.patient_id, nextPos, time.TZ],
         );
       });
 

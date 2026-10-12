@@ -138,7 +138,9 @@ export default function MyAppointments() {
                                 {a.status === "in-progress"
                                   ? a.queuePosition
                                     ? `In queue #${a.queuePosition}`
-                                    : "Checked in"
+                                    : a.queueState === "in-consultation"
+                                      ? "In consultation"
+                                      : "Checked in"
                                   : "Check in"}
                               </button>
                             )}

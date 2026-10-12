@@ -80,6 +80,22 @@ router.post(
 // Collection-level routes are registered after the `:id` routes above so
 // they are not shadowed by the ownership middleware.
 router.get("/queue", ctrl.liveQueue);
+
+// Call the next patient. Registered here, beside the read, so the collection
+// path exists before any `:id` route could shadow it. The validator has no
+// pattern rule, so the date format is checked in the controller, which reports
+// a precise error rather than a generic validation failure.
+router.post(
+  "/queue/next",
+  validate({
+    body: {
+      doctorId: { required: true, type: "string" },
+      date: { required: true, type: "string" },
+    },
+  }),
+  ctrl.callNext,
+);
+
 router.get("/availability", ctrl.availabilitySummary);
 
 router.get("/", ctrl.listAppointments);

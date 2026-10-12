@@ -83,6 +83,7 @@ server transforms JSX for `checks.html`.
 | `npm --prefix server run test:slots` | Slots, availability, timezone |
 | `npm --prefix server run test:appointments` | Booking, conflicts, lifecycle, check-in |
 | `npm --prefix server run test:queue` | Queue positions, ordering, authorization |
+| `npm --prefix server run test:room` | The Phase 9 waiting room, deterministically |
 | `npm --prefix server run test:flow` | One patient's visit, end to end, from the doctor |
 | `npm --prefix server run test:schema` | Migrations are applied and consistent |
 | `npm --prefix server run test:all` | Schema, queue and appointment suites |
@@ -93,6 +94,13 @@ the doctor's queue, the doctor completes it, and the schedule and queue both
 reflect that. It asserts the refusals on the way too, so "it worked" means
 something: an illegal transition, a second patient checking in on someone else's
 visit, and another doctor reaching in are all expected to fail.
+
+`test:room` builds the situation the old per-slot model got wrong — three patients
+holding three *different* slots with the same doctor, all checked in — and drives the
+room through its whole life: ranks, call-next, a completion, a no-show, a
+cancellation, and a call-next racing itself. It asserts computed positions rather
+than the stored ones, and it is deterministic: it builds its own clock and its own
+fixtures instead of waiting for the seed to be in a convenient state.
 
 `test:queue` checks patients in through the real endpoint. A queue entry only
 exists for a slot that has already started, so when the seed happens to leave
@@ -125,15 +133,25 @@ day from the API and walks to the next date when a day fills up, so it stays
 green across repeated runs, but a long-lived local database does accumulate
 slots from it.
 
-Its provider queue checks book **two** appointments and check both patients in,
-because an ordering assertion over one row proves nothing. Those two are
-cancelled at the end, which returns the slots to `available` so the next run
-reuses them. Completing a consultation is the exception: `completed` is a
+Its queue checks run twice, in two separate parts. The provider part books **two**
+appointments and checks both patients in, because an ordering assertion over one
+row proves nothing. The Phase 9 part books **three** — three different slots, one
+doctor — and walks the room through its whole life: call-next, a repeated
+call-next, two call-nexts racing each other, a completion, a no-show and a
+cancellation. Everything it creates is cancelled in a `finally`, which returns the
+slots to `available` so the next run reuses them.
+
+Run one part on its own while iterating with `PART=12` (the Phase 9 part) or any
+other part number; the whole suite is quick, but a single part is quicker.
+
+Completed appointments are the exception to that cleanup: `completed` is a
 terminal status with no transition back, and no endpoint deletes an appointment,
-so that one appointment per run stays in the day's queue. It stops the morning
-from running out of check-in-able slots, at which point `test:appointments`
-reports that the day is full and needs a fresh database — recreate with
-`db:migrate` and `db:seed` rather than treating it as a failure.
+so a completed one stays in the day's queue for the rest of the day. That is
+intended — a finished visit is history — and it is why the patient-facing payload
+picks the caller's *live* entry rather than the first one that matches. Both parts
+stop the morning from running out of check-in-able slots, at which point
+`test:appointments` reports that the day is full and needs a fresh database —
+recreate with `db:migrate` and `db:seed` rather than treating it as a failure.
 
 The suites that assert seed invariants (`test:schema`) want a database that has
 not been used by the others, so point `DATABASE_URL` at a fresh one:
@@ -263,6 +281,13 @@ All responses use the envelope `{ success, message, data }`.
 | PATCH  | `/:id/reschedule`, `/:id/cancel`, `/:id/status` | owner (doctor for status)                        |
 | POST   | `/:id/check-in`                                 | patient                                          |
 | GET    | `/queue`, `/availability`                       | signed-in                                        |
+| POST   | `/queue/next`                                   | the assigned doctor (or admin)                   |
+
+`GET /queue` returns the waiting room: `clinicDate`, `waitingCount`,
+`activeConsultation`, and each entry's computed `position`. A patient calling it
+for a doctor's room receives only their own row — no room aggregate and no other
+patient's identity. `POST /queue/next` promotes the first waiting patient and is
+idempotent while a consultation is active.
 
 ### AI — `/api/ai`
 
@@ -298,27 +323,86 @@ zero external dependencies:
 - **Auth limiter is skipped when `NODE_ENV !== "production"`** so the smoke
   suite can be re-run freely. Production traffic stays rate-limited.
 
-### The queue model (carry into Phase 9)
+### The waiting room: one per doctor per clinic day
 
-The waiting room is **per appointment slot**, not one room per doctor, and that
-shapes everything the queue can show:
+Patients hold separate appointment slots but wait for the same person, so their
+order comes from **when they arrived**, not from which slot they hold.
 
-- A slot holds a single active appointment (`bookingService.findActiveForSlot`),
-  so a slot's queue has one member and **every position is `1`**. The doctor
-  queue prints the position the server sends and says so on the card; it never
-  invents a running number.
-- Ordering is therefore by appointment start time
-  (`ORDER BY sl.starts_at, q.position`) rather than by arrival at the door.
-- There is **no queue-state endpoint**. `queueRepo.setState` has exactly one
-  caller — completing an appointment. A doctor cannot call the next patient or
-  move an entry between `waiting`, `in-consultation` and `left`, so the UI
-  offers only the transitions `ALLOWED_TRANSITIONS` permits and says nothing
-  about queue state changing.
-- `GET /appointments/queue` returns **no appointment time**: `listForDoctor`
-  selects `start_time` but `toEntry` drops it. The dashboard joins the entry to
-  the appointment it already fetched rather than the server inventing one.
-- `averageWaitMinutes` is a queue-wide figure (`waiting × 15`). The per-patient
-  estimate exists only on the check-in response, so the queue does not show one.
+- A room is `(doctor_id, clinic_date)`. `clinic_date` is stamped on the entry at
+  check-in and derived from the slot with the same expression the repositories
+  use to label a slot.
+- **Positions are computed**, with `row_number()` over the waiting set, ordered by
+  `joined_at ASC, id ASC`. They start at 1, stay contiguous, and renumber
+  themselves the moment anyone leaves — there is no stored counter to compact and
+  therefore no way to leave a gap.
+- **Position 1 means the next patient to be seen.** The patient in consultation is
+  excluded from the ranking and returned separately as `activeConsultation`, so
+  "you are 2nd" never silently changes meaning.
+- `queue_entries.position` survives as a **legacy per-slot number** for older
+  readers. It is still written and still constrained, and it is never used to
+  rank the room.
+- `POST /api/appointments/queue/next` promotes the head of the queue. It is
+  idempotent: while somebody is in consultation it returns that same patient, so
+  a double click, a retry or two browsers cannot skip anyone.
+- `averageWaitMinutes` is **an assumption, not a measurement**: the API multiplies
+  the head count by a flat 15 minutes per patient, because no per-visit durations
+  are recorded. The dashboard therefore labels it as one ("~45 min if each visit
+  is 15 min") rather than as an average wait. There is no per-patient estimate on
+  this endpoint, so none is shown.
+
+**Locking.** Every operation that touches the room takes the room's
+transaction-scoped advisory lock **first**, then the appointment row, then the slot
+row. Check-in, call-next, reschedule, cancellation and status changes all mutate
+queue entries, so all five follow that order; booking touches no queue row and
+never asks for the lock. Taking the advisory lock after a row lock would invert
+against those paths and let them deadlock, which is why the order is enforced
+rather than merely documented. The partial unique index on
+`(doctor_id, clinic_date) WHERE state = 'in-consultation'` is the structural
+backstop underneath the application logic.
+
+**The queue updates by polling.** `QueueContext` owns a single five-second poller
+for the whole app, running only while the tab is visible, never overlapping itself,
+and discarding stale responses via a ticket. A provider-less component mounts no
+poller at all.
+
+### Migration 017 — additive, and how to recover
+
+`017_queue_room.sql` adds `queue_entries.clinic_date`, backfills it, and adds the
+room indexes. It **drops nothing**: `position` and `queue_unique_position` are left
+exactly as they are.
+
+- The backfill refuses to continue if any row cannot be dated, and the
+  single-consultation index is validated before it is created, so a partial
+  migration fails loudly instead of leaving a half-applied table.
+- **This migration is not reversible in place.** Migrations here are forward-only
+  and the only built-in rollback is `db:migrate:reset`, which is a destructive
+  `DROP SCHEMA CASCADE`. Nothing here should be described as reversible.
+
+**Before applying it to anything you care about, take a backup:**
+
+```bash
+# logical backup, preferred - restores into a fresh database
+pg_dump --format=custom --file=medicare-before-017.dump "$DATABASE_URL"
+
+# restore into a new database, then deploy the previous code against it
+createdb medicare_rollback
+pg_restore --dbname=medicare_rollback medicare-before-017.dump
+```
+
+**Recovery procedure**
+
+1. Restore the dump into a clean database and point `DATABASE_URL` at it.
+2. Deploy the code from before this commit (the Phase 8 checkpoint, `5db3221`).
+3. Verify with `npm --prefix server run test:schema` and
+   `npm --prefix server run test:queue`.
+
+The additive steps are safe to leave in place on their own: nothing reads
+`clinic_date` until the code that accompanies the migration is deployed. If the
+old code is still running against the new schema, it keeps using the legacy
+`position` column and behaves exactly as it did in Phase 8.
+
+Room capacity is deliberately **not** in this checkpoint. `slots.max_queue` remains
+the (per-slot, and in practice unreachable) limit it has always been.
 
 Turning this into a real room — one queue per doctor, positions that mean
 something, and a way for a doctor to advance it — is Phase 9 work and needs a

@@ -81,6 +81,16 @@ const BY_CONSTRAINT = {
       "QUEUE_FULL",
     ),
 
+  // At most one patient in consultation per doctor-day. Application logic takes
+  // the room's advisory lock so two callers cannot both reach the insert; this is
+  // the structural backstop underneath that.
+  queue_one_active_consultation: () =>
+    new AppError(
+      "Another patient is already in consultation",
+      409,
+      "QUEUE_BUSY",
+    ),
+
   queue_one_entry_per_appointment: () =>
     new AppError(
       "This appointment is already checked in",

@@ -100,10 +100,18 @@ export const listAppointments = asyncHandler(async (req, res) => {
   const positions = await queueService.positionsForAppointments(list);
 
   return sendSuccess(res, {
-    appointments: list.map((a) => ({
-      ...withNames(a),
-      queuePosition: positions.get(a.id) ?? null,
-    })),
+    appointments: list.map((a) => {
+      const queued = positions.get(a.id);
+      return {
+        ...withNames(a),
+        // The place in the LINE. Null for a patient who is in consultation
+        // (they are in the room, not in the queue) and for anyone not waiting.
+        queuePosition: queued?.position ?? null,
+        // Additive, so the client can say "in consultation" rather than
+        // showing a blank where a number used to be.
+        queueState: queued?.state ?? null,
+      };
+    }),
     count: list.length,
   });
 });
@@ -304,7 +312,14 @@ export const liveQueue = asyncHandler(async (req, res) => {
     resolvedDate = slots.find((s) => s.status !== "blocked")?.date;
   }
 
-  const queue = await queueService.getQueue(doctorId, resolvedDate);
+  // A clinic date names a real waiting ROOM (doctor_id, clinic_date), so the
+  // room view is used whenever a date is known. `getQueue` remains for the
+  // undated path, where there is no room to scope to.
+  const room =
+    resolvedDate && /^\d{4}-\d{2}-\d{2}$/.test(resolvedDate)
+      ? await queueService.getRoom(doctorId, resolvedDate)
+      : await queueService.getQueue(doctorId, resolvedDate);
+  const queue = room;
 
   // The waiting list exposes patient names, so it is scoped: a doctor sees
   // their own queue, an admin sees any. Everyone else sees only their own
@@ -314,27 +329,101 @@ export const liveQueue = asyncHandler(async (req, res) => {
 
   if (req.user.role === "admin" || isAssignedDoctor) return sendSuccess(res, queue);
 
-  const mine = queue.entries.find((e) => e.patientId === req.user.id);
+  // A patient can hold MORE THAN ONE entry in the same room over a clinic day -
+  // a finished visit is kept in the room as history, and a repeat booking for the
+  // same doctor adds a second - so "their" entry has to be chosen rather than
+  // taken as the first row that matches. Taking the first returned a completed
+  // visit from earlier in the day, which reported a null place in the line for a
+  // patient who was in fact waiting.
+  //
+  // Priority: whoever is in consultation, then the most recently joined live
+  // entry, then the most recent entry of any state. That is what the patient is
+  // asking about in every case.
+  const candidates = queue.entries.filter((e) => e.patientId === req.user.id);
+  const newestFirst = (list) =>
+    [...list].sort((a, b) => String(b.joinedAt).localeCompare(String(a.joinedAt)));
+  const mine =
+    candidates.find((e) => e.state === "in-consultation") ??
+    newestFirst(candidates.filter((e) => e.state === "waiting"))[0] ??
+    newestFirst(candidates)[0] ??
+    null;
+
+  // A patient sees themselves and nothing else. The doctor-facing fields
+  // (`total`, `activeConsultation`, other patients' positions) describe the
+  // room, which is the provider's information, so none of it is included here.
+  const self = mine
+    ? {
+        id: mine.id,
+        slotId: mine.slotId,
+        appointmentId: mine.appointmentId,
+        // The caller's OWN id, which they already know. Included so a client can
+        // confirm the row is theirs; it exposes nobody else's.
+        patientId: mine.patientId,
+        state: mine.state,
+        joinedAt: mine.joinedAt,
+        // `roomPosition`, the SAME key the provider view uses. Naming it
+        // `position` here would hand a patient the legacy per-slot number under
+        // the name the room model gives the computed one, and for every row
+        // after the first the two disagree.
+        roomPosition: mine.roomPosition ?? null,
+      }
+    : null;
 
   return sendSuccess(res, {
     doctorId,
     date: resolvedDate,
-    total: queue.total,
-    waiting: queue.waiting,
-    averageWaitMinutes: queue.averageWaitMinutes,
-    entries: mine
-      ? [
-          {
-            id: mine.id,
-            slotId: mine.slotId,
-            appointmentId: mine.appointmentId,
-            state: mine.state,
-            joinedAt: mine.joinedAt,
-            position: mine.position,
-          },
-        ]
-      : [],
+    clinicDate: resolvedDate,
+    entries: self ? [self] : [],
+    activeConsultation: null,
+    // No `waitingCount` here, even a caller-scoped one. The name reads as a room
+    // total, and a field that means "just you" while looking like "the room" is
+    // the kind of thing that gets misread by the next caller. The client's own
+    // row carries the state, which is the only fact that is theirs.
+    self,
   });
+});
+
+/**
+ * Call the next patient in this doctor's waiting room.
+ *
+ * Idempotent: while someone is in consultation, calling again returns that same
+ * patient rather than advancing the queue, so a double click, a retry, or two
+ * browsers cannot skip anyone.
+ */
+export const callNext = asyncHandler(async (req, res) => {
+  const { doctorId, date } = req.body ?? {};
+
+  if (!doctorId) throw new AppError("doctorId is required", 400, "MISSING_DOCTOR");
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new AppError("date must be YYYY-MM-DD", 400, "MISSING_DATE");
+  }
+
+  // Only the provider this room belongs to (or an admin) may advance it. A
+  // patient asking for someone else's waiting room is refused outright rather
+  // than quietly scoped, because unlike a read there is nothing here for them.
+  const me = await doctorRepo.findByUserId(req.user.id);
+  const isAssignedDoctor = req.user.role === "doctor" && me?.id === doctorId;
+  if (!isAssignedDoctor && req.user.role !== "admin") {
+    throw new AppError("You cannot call patients in this waiting room", 403, "FORBIDDEN");
+  }
+
+  const result = await queueService.callNext({ doctorId, clinicDate: date });
+  const appointment = await appointmentRepo.findById(result.entry.appointmentId);
+  const room = await queueService.getRoom(doctorId, date);
+
+  return sendSuccess(
+    res,
+    {
+      promoted: result.promoted,
+      entry: result.entry,
+      appointment,
+      position: result.entry.roomPosition ?? null,
+      activeConsultation: room.activeConsultation,
+      waitingCount: room.waitingCount,
+      entries: room.entries,
+    },
+    result.promoted ? "Called the next patient" : "That patient is already in consultation",
+  );
 });
 
 export const availabilitySummary = asyncHandler(async (req, res) => {

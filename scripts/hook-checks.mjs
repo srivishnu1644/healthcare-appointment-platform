@@ -39,6 +39,11 @@
  *  10. Error boundary in the live app: a route chunk that fails to load leaves
  *      the shell standing with a usable recovery control instead of a blank page,
  *      and the same URL recovers once the chunk can load again.
+ *  11. The Phase 9 waiting room end to end: three patients book different slots
+ *      with one doctor, each sees only their own place, the doctor sees 1/2/3,
+ *      call-next promotes and is idempotent under a race, no-show and
+ *      cancellation both move the room on, and polling is single, paced,
+ *      paused while hidden and stopped after sign-out.
  *
  *   Parts 9 and 10 are additionally exercised inside the harness page itself,
  *   which mounts the real ErrorBoundary against a component that throws on
@@ -1861,10 +1866,16 @@ async function runProviderChecks(browser) {
    * tables are compared rather than trusted.
    */
   const repoRoot = new URL("../server/src/services/bookingService.js", import.meta.url);
-  const [serverSrc, clientSrc] = await Promise.all([
+  const [serverSrc, clientSrc, queueCtxSrc] = await Promise.all([
     readFile(repoRoot, "utf8").catch(() => ""),
     readFile(
       new URL("../client/src/pages/ProviderDashboard.jsx", import.meta.url),
+      "utf8",
+    ).catch(() => ""),
+    // Phase 9 moved the room read out of the dashboard and into the shared
+    // provider, so the two files together are what the queue touches.
+    readFile(
+      new URL("../client/src/context/QueueContext.jsx", import.meta.url),
       "utf8",
     ).catch(() => ""),
   ]);
@@ -1901,13 +1912,25 @@ async function runProviderChecks(browser) {
   check("a terminal status offers no action at all",
     ["completed", "cancelled", "no-show"].every((s) => (clientTable?.[s] ?? []).length === 0),
     JSON.stringify(["completed", "cancelled", "no-show"].map((s) => clientTable?.[s])));
-  // Reading a queue state is required (the checked-in count uses it). What must
-  // not appear is a WRITE: the API has no queue-state endpoint, so any call the
-  // dashboard makes beyond the read would be inventing one.
-  const queueCalls = [...clientSrc.matchAll(/api\.(\w*queue\w*)\(/gi)].map((m) => m[1]);
-  check("the dashboard only ever READS the queue, never writes a queue state",
-    queueCalls.length > 0 && queueCalls.every((c) => /^queue$/i.test(c)),
-    `api calls: ${JSON.stringify(queueCalls)}`);
+  // The API has exactly two queue endpoints: the room read and call-next. Any
+  // other queue-shaped call in the client would be inventing an endpoint, so the
+  // names are pinned rather than merely counted.
+  const queueSrc = clientSrc + queueCtxSrc;
+  const queueCalls = [...queueSrc.matchAll(/api\.(\w*queue\w*|callNext)\(/gi)].map((m) => m[1]);
+  check("the client calls only the two queue endpoints the API actually has",
+    queueCalls.length > 0 && queueCalls.every((c) => /^(queue|callNext)$/i.test(c)),
+    `api calls: ${JSON.stringify([...new Set(queueCalls)])}`);
+  check("the polling provider only reads; the one mutation is the doctor's click",
+    /api\.callNext\(/.test(clientSrc) && !/api\.callNext\(/.test(queueCtxSrc) &&
+      /api\.queue\(/.test(queueCtxSrc),
+    `callNext in dashboard=${/api\.callNext\(/.test(clientSrc)} ` +
+      `in provider=${/api\.callNext\(/.test(queueCtxSrc)}`);
+  // A setInterval poller would ignore tab visibility and survive unmount. The
+  // poller is a self-rescheduling timeout behind a document.hidden check instead.
+  check("the room is polled with a visibility-aware timeout, not a bare interval",
+    !/setInterval\(/.test(queueCtxSrc) && /document\.hidden/.test(queueCtxSrc) &&
+      /visibilitychange/.test(queueCtxSrc),
+    `setInterval=${/setInterval\(/.test(queueCtxSrc)}`);
 
   /* ------------------------------------------------------------------ *
    *  Checkpoint 3 — the doctor queue
@@ -1952,8 +1975,15 @@ async function runProviderChecks(browser) {
       (patientQueue?.entries ?? []).every((e) => !e.patientName || e.patientName !== undefined) &&
       (patientQueue?.entries ?? []).every((e) => e.state !== undefined),
     `entries=${(patientQueue?.entries ?? []).length}`);
-  check("a patient cannot see the waiting total's row count",
-    typeof patientQueue?.total === "number", JSON.stringify(patientQueue ?? {}).slice(0, 80));
+  // Phase 9 removed the room-level aggregates from the patient-scoped payload:
+  // `total`, `waiting` and `averageWaitMinutes` describe the provider's room,
+  // not the caller's own place. Asserting they are ABSENT is stronger than the
+  // old check, which only asserted that `total` happened to be a number.
+  check("a patient is given no room-level aggregate at all",
+    patientQueue?.total === undefined &&
+      patientQueue?.waiting === undefined &&
+      patientQueue?.averageWaitMinutes === undefined,
+    JSON.stringify(patientQueue ?? {}).slice(0, 120));
 
   if (otherDoctorId) {
     const crossQueue = (await (
@@ -1967,8 +1997,8 @@ async function runProviderChecks(browser) {
   /* ---- a queue with patients in it ----
    * Check-in needs a slot that has already started, which the seed does not
    * guarantee at every hour, so the fixture opens one when it has to. TWO
-   * patients are checked in because the server orders a queue by appointment
-   * time, and an ordering assertion over a single row proves nothing.
+   * patients are checked in because the room is ordered by ARRIVAL, and an
+   * ordering or call-next assertion over a single row proves nothing.
    *
    * Both appointments are cancelled at the end, which returns the slots to
    * `available` so a later run reuses them instead of adding more.
@@ -2064,11 +2094,23 @@ async function runProviderChecks(browser) {
     check("every position is the value the server sent, as an integer",
       (apiQueue?.entries ?? []).every((e) => Number.isInteger(e.position) && e.position >= 1),
       JSON.stringify((apiQueue?.entries ?? []).map((e) => e.position)));
-    check("the queue order is the server's, by appointment time",
-      JSON.stringify((apiQueue?.entries ?? []).map((e) => toMin(timeOf.get(e.appointmentId))))
-        === JSON.stringify((apiQueue?.entries ?? []).map((e) => toMin(timeOf.get(e.appointmentId)))
-          .slice().sort((a, b) => a - b)),
-      (apiQueue?.entries ?? []).map((e) => timeOf.get(e.appointmentId)).join(","));
+    // Phase 9 changed the order deliberately. A waiting room is ordered by
+    // ARRIVAL, not by which slot the patient holds - someone who arrived early
+    // for a later slot waits behind an on-time patient for an earlier one.
+    const waitingOrder = (apiQueue?.entries ?? []).filter((e) => e.state === "waiting");
+    const joinedAt = waitingOrder.map((e) => e.joinedAt);
+    check("the waiting order is arrival order, not appointment time",
+      JSON.stringify(joinedAt) ===
+        JSON.stringify(joinedAt.slice().sort((a, b) => String(a).localeCompare(String(b)))),
+      waitingOrder.map((e) => `${timeOf.get(e.appointmentId)}@${e.joinedAt}`).join(" | "));
+    check("waiting positions are contiguous and start at 1",
+      JSON.stringify(waitingOrder.map((e) => e.roomPosition)) ===
+        JSON.stringify(waitingOrder.map((_, i) => i + 1)),
+      JSON.stringify(waitingOrder.map((e) => e.roomPosition)));
+    check("a patient in consultation is not ranked in the line",
+      (apiQueue?.entries ?? []).filter((e) => e.state === "in-consultation")
+        .every((e) => e.roomPosition === null),
+      JSON.stringify((apiQueue?.entries ?? []).map((e) => `${e.state}:${e.roomPosition}`)));
     check("the reported waiting total matches the waiting rows",
       apiQueue?.waiting === (apiQueue?.entries ?? []).filter((e) => e.state === "waiting").length,
       `waiting=${apiQueue?.waiting}`);
@@ -2085,8 +2127,13 @@ async function runProviderChecks(browser) {
     const mine = (apiQueue?.entries ?? []).find((e) => e.appointmentId === queueAppointmentId);
     check("the queue card shows the checked-in patient",
       queueText.includes(mine?.patientName ?? "@@none@@"), queueText.slice(0, 140));
-    check("the queue card shows the server position",
-      queueText.includes(`#${mine?.position}`), `#${mine?.position}`);
+    // Phase 9: the card shows the computed ROOM position. The legacy per-slot
+    // `position` is still in the payload and still 1 for every row, so asserting
+    // on it would pass while the UI showed the wrong number.
+    check("the queue card shows the computed room position, not the legacy one",
+      mine?.roomPosition !== null && mine?.roomPosition !== undefined &&
+        queueText.includes(`#${mine?.roomPosition}`),
+      `roomPosition=${mine?.roomPosition} legacy=${mine?.position} card=${queueText.slice(0, 120)}`);
     check("the queue card shows the queue state",
       /waiting|in consultation|completed/i.test(queueText), queueText.slice(0, 140));
     check("the queue card reports the waiting total",
@@ -2094,14 +2141,31 @@ async function runProviderChecks(browser) {
     // Names are distinctive and unambiguous, so the card must mention them in
     // exactly the order the server sent. Comparing clock text instead would
     // compare "1:30 AM" against the raw "01:30" and fail on formatting.
-    const serverNames = (apiQueue?.entries ?? []).map((e) => e.patientName).filter(Boolean);
+    // Compared against the WAITING rows, which is what the numbered line renders.
+    // A finished visit stays in the room as history and the patient in
+    // consultation is shown apart, so comparing against every entry would demand
+    // that the card list completed visits in the queue.
+    const serverNames = (apiQueue?.entries ?? [])
+      .filter((e) => e.state === "waiting")
+      .map((e) => e.patientName)
+      .filter(Boolean);
     const shownNames = serverNames.length
       ? (queueText.match(new RegExp(serverNames.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g")) ?? [])
       : [];
-    check("the queue card lists patients in the server's order",
+    check("the queue card lists the waiting patients in the server's order",
       serverNames.length > 0 &&
         JSON.stringify(shownNames) === JSON.stringify(serverNames),
       `server=${serverNames.join(",")} shown=${shownNames.join(",")}`);
+    // The numbered line must hold EXACTLY the waiting rows. Finished visits stay
+    // in the room as history and the consultation is shown apart, so a line that
+    // also listed those would be reporting past visits as people still to see.
+    // Counting rows rather than names is what makes this checkable: the same
+    // patient can be in the room twice, once finished and once waiting, and a
+    // name is present either way.
+    const listedRows = await queueCard.locator("li").count();
+    check("the numbered line holds exactly the waiting rows, no history and no consultation",
+      listedRows === serverNames.length,
+      `listed=${listedRows} waiting=${serverNames.length}`);
     check("the queue card shows each entry's appointment time",
       (apiQueue?.entries ?? []).every((e) => {
         const raw = timeOf.get(e.appointmentId);
@@ -2289,22 +2353,767 @@ async function runProviderChecks(browser) {
 }
 
 /* ------------------------------------------------------------------ *
+ *  Phase 9 — the waiting room, end to end                             *
+ * ------------------------------------------------------------------ *
+ *
+ * The whole room lifecycle against the real API and the real UI:
+ *
+ *   1. three patients book DIFFERENT slots with the same doctor and check in,
+ *      which is the case the old per-slot model got wrong (every position 1);
+ *   2. the doctor sees 1, 2, 3 in arrival order;
+ *   3. each patient sees ONLY their own place, and no room aggregate;
+ *   4. call next promotes the head, and the rest renumber;
+ *   5. call next again does NOT advance anybody (idempotent);
+ *   6. two simultaneous call-next requests promote exactly one patient;
+ *   7. completing the consultation frees the room for the next call;
+ *   8. cancellation and no-show both move the room on.
+ *
+ * Then the polling lifecycle: one poller, at the documented cadence, paused
+ * while the tab is hidden, refreshed on return, and stopped after sign-out.
+ *
+ * This part is deliberately self-contained - it builds its own three patients
+ * and releases them in `finally` - so it cannot be destabilised by, or
+ * destabilise, the provider checks above.
+ */
+async function runQueueRoomChecks(browser) {
+  const context = await browser.newContext({ timezoneId: TZ });
+  const page = await context.newPage();
+  const DOCTOR = { email: "doctor1@demo.com", password: "doctor123" };
+  const CLINIC_TZ = "Asia/Kolkata";
+  const toMin = (t) => {
+    const [h, m] = String(t).split(":").map(Number);
+    return h * 60 + m;
+  };
+  const hhmm = (m) =>
+    `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+
+  const session = await loginViaApi(DOCTOR);
+  const doctorAuth = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${session.token}`,
+  };
+  const doctorId = (
+    await (
+      await fetch(`${API}/auth/me`, {
+        headers: { Authorization: `Bearer ${session.token}` },
+      })
+    ).json()
+  )?.data?.user?.doctor?.id;
+  const clinicToday = new Intl.DateTimeFormat("en-CA", {
+    timeZone: CLINIC_TZ,
+  }).format(new Date());
+  const nowParts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: CLINIC_TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+  const pg = (t) => Number(nowParts.find((x) => x.type === t)?.value ?? 0);
+  const nowMin = ((pg("hour") % 24) * 60) + pg("minute");
+
+  const readRoom = async (headers = doctorAuth) =>
+    (
+      await (
+        await fetch(`${API}/appointments/queue?doctorId=${doctorId}&date=${clinicToday}`, {
+          headers,
+        })
+      ).json()
+    )?.data ?? null;
+  const setStatus = (id, status) =>
+    fetch(`${API}/appointments/${id}/status`, {
+      method: "PATCH",
+      headers: doctorAuth,
+      body: JSON.stringify({ status }),
+    });
+  const callNextApi = async (headers = doctorAuth) =>
+    (
+      await (
+        await fetch(`${API}/appointments/queue/next`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ doctorId, date: clinicToday }),
+        })
+      ).json()
+    )?.data ?? null;
+
+  const fixture = [];
+  try {
+    /* ---- 1. three patients, three different slots, one doctor ---- */
+    const todaysSlots =
+      (await (await fetch(`${API}/doctors/${doctorId}/slots?date=${clinicToday}`)).json())
+        ?.data?.slots ?? [];
+    const busy = todaysSlots.map((s) => [toMin(s.startTime), toMin(s.endTime)]);
+    const slots = todaysSlots
+      .filter((s) => s.status === "available" && toMin(s.startTime) + 30 <= nowMin)
+      .sort((a, b) => toMin(a.startTime) - toMin(b.startTime))
+      .slice(0, 3);
+
+    // Open extra windows only when the calendar has run out. Each is a separate
+    // slot, which is the point: three patients, three slots, one room.
+    const taken = new Set(slots.map((s) => toMin(s.startTime)));
+    for (let m = 0; m + 30 <= nowMin - 5 && slots.length < 3; m += 5) {
+      if (taken.has(m) || busy.some(([f, t]) => m < t && f < m + 30)) continue;
+      const made = (
+        await (
+          await fetch(`${API}/doctors/${doctorId}/slots`, {
+            method: "POST",
+            headers: doctorAuth,
+            body: JSON.stringify({
+              date: clinicToday,
+              times: [hhmm(m)],
+              duration: 30,
+              mode: "in-person",
+              fee: 500,
+              maxQueue: 3,
+            }),
+          })
+        ).json()
+      )?.data?.created?.[0];
+      if (made) slots.push({ ...made, status: "available", startTime: hhmm(m) });
+    }
+    check(
+      "the room fixture found three started slots for one doctor",
+      slots.length === 3,
+      `now=${hhmm(nowMin)} slots=${slots.map((s) => s.startTime).join(",") || "none"}`,
+    );
+
+    const creds = [
+      { email: "ishita@demo.com", password: "patient123" },
+      { email: "aman@demo.com", password: "patient123" },
+      { email: "patient@demo.com", password: "patient123" },
+    ];
+    const notes = [];
+    for (let i = 0; i < 3; i += 1) {
+      const s = await loginViaApi(creds[i]);
+      const booked = await (
+        await fetch(`${API}/appointments`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${s.token}`,
+          },
+          body: JSON.stringify({ doctorId, slotId: slots[i].id }),
+        })
+      ).json().catch(() => null);
+      if (!booked?.data?.appointment?.id) {
+        notes.push(`${creds[i].email}: book failed`);
+        continue;
+      }
+      const id = booked.data.appointment.id;
+      const joined = await fetch(`${API}/appointments/${id}/check-in`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${s.token}` },
+      });
+      if (joined.status !== 200) {
+        notes.push(`${creds[i].email}: check-in HTTP ${joined.status}`);
+        continue;
+      }
+      // A short gap makes joined_at strictly ordered, so "arrival order" is a
+      // fact about these rows rather than a tie the id happens to break.
+      await new Promise((r) => setTimeout(r, 40));
+      fixture.push({ ...creds[i], token: s.token, id, slotId: slots[i].id });
+    }
+    check(
+      "three patients booked different slots with the same doctor and checked in",
+      fixture.length === 3,
+      `${fixture.length} checked in; ${notes.join(" | ") || "no failures"}`,
+    );
+
+    /* ---- 2. the room numbers them 1, 2, 3 ---- */
+    const room = await readRoom();
+    const waiting = (room?.entries ?? []).filter((e) => e.state === "waiting");
+    check(
+      "the room ranks the three waiting patients 1, 2, 3",
+      JSON.stringify(waiting.map((e) => e.roomPosition)) === JSON.stringify([1, 2, 3]),
+      JSON.stringify(waiting.map((e) => `${e.patientName}#${e.roomPosition}`)),
+    );
+    check(
+      "the rank is arrival order, and is not the legacy per-slot number",
+      JSON.stringify(waiting.map((e) => e.appointmentId)) ===
+        JSON.stringify(fixture.map((f) => f.id)) &&
+        new Set(waiting.map((e) => e.position)).size === 1,
+      `room=${waiting.map((e) => e.roomPosition).join(",")} legacy=${waiting
+        .map((e) => e.position)
+        .join(",")}`,
+    );
+
+    /* ---- 3. each patient sees only their own place ---- */
+    for (const [i, f] of fixture.entries()) {
+      const mine = (
+        await (
+          await fetch(
+            `${API}/appointments/queue?doctorId=${doctorId}&date=${clinicToday}`,
+            { headers: { Authorization: `Bearer ${f.token}` } },
+          )
+        ).json()
+      )?.data;
+      const rows = mine?.entries ?? [];
+      check(
+        `patient ${i + 1} receives only their own row`,
+        rows.length <= 1 && rows.every((e) => e.appointmentId === f.id),
+        `rows=${rows.length} mine=${f.id}`,
+      );
+      check(
+        `patient ${i + 1} sees their own place in the line, and no room aggregate`,
+        rows[0]?.roomPosition === i + 1 &&
+          mine.total === undefined &&
+          mine.waiting === undefined &&
+          mine.waitingCount === undefined &&
+          mine.averageWaitMinutes === undefined &&
+          mine.activeConsultation === null,
+        `position=${rows[0]?.roomPosition} keys=${Object.keys(mine ?? {}).join(",")}`,
+      );
+      const body = JSON.stringify(mine ?? {});
+      const others = waiting
+        .filter((e) => e.appointmentId !== f.id)
+        .map((e) => e.patientName)
+        .filter(Boolean);
+      check(
+        `patient ${i + 1} never sees another patient's name`,
+        others.every((n) => !body.includes(n)),
+        `others=${others.join(",")}`,
+      );
+    }
+
+    /* ---- 4. who may advance the room ---- */
+    const anonNext = await fetch(`${API}/appointments/queue/next`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ doctorId, date: clinicToday }),
+    });
+    check(
+      "an anonymous caller cannot call the next patient",
+      anonNext.status === 401,
+      `HTTP ${anonNext.status}`,
+    );
+    const patientNext = await fetch(`${API}/appointments/queue/next`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${fixture[0].token}`,
+      },
+      body: JSON.stringify({ doctorId, date: clinicToday }),
+    });
+    check(
+      "a patient cannot call the next patient",
+      patientNext.status === 403,
+      `HTTP ${patientNext.status}`,
+    );
+    const otherDoc = await loginViaApi({
+      email: "doctor2@demo.com",
+      password: "doctor123",
+    });
+    const crossNext = await fetch(`${API}/appointments/queue/next`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${otherDoc.token}`,
+      },
+      body: JSON.stringify({ doctorId, date: clinicToday }),
+    });
+    check(
+      "a doctor cannot advance another doctor's room",
+      crossNext.status === 403,
+      `HTTP ${crossNext.status}`,
+    );
+    const badDate = await fetch(`${API}/appointments/queue/next`, {
+      method: "POST",
+      headers: doctorAuth,
+      body: JSON.stringify({ doctorId, date: "12-31-2026" }),
+    });
+    check("call next refuses a malformed date", badDate.status === 400, `HTTP ${badDate.status}`);
+    const noDoctorId = await fetch(`${API}/appointments/queue/next`, {
+      method: "POST",
+      headers: doctorAuth,
+      body: JSON.stringify({ date: clinicToday }),
+    });
+    check(
+      "call next refuses a request with no doctorId",
+      noDoctorId.status === 400,
+      `HTTP ${noDoctorId.status}`,
+    );
+
+    /* ---- 5. the dashboard renders the room ---- */
+    await page.goto(`${APP_URL}/login`, { waitUntil: "networkidle" });
+    await page.locator("#email").fill(DOCTOR.email);
+    await page.locator("#password").fill(DOCTOR.password);
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await page.waitForFunction(() => !location.pathname.startsWith("/login"), {
+      timeout: 20000,
+    });
+    await page.waitForLoadState("networkidle").catch(() => {});
+    await page.goto(`${APP_URL}/provider`, { waitUntil: "networkidle" });
+    const queueCard = page
+      .locator("section", { has: page.getByRole("heading", { name: "Queue", exact: true }) })
+      .first();
+    await queueCard.getByRole("button", { name: /Call next patient/ }).waitFor({ timeout: 15000 });
+
+    const cardText = (await queueCard.innerText()).replace(/\s+/g, " ");
+    const serverNames = waiting.map((e) => e.patientName);
+    const shownNames =
+      cardText.match(
+        new RegExp(
+          serverNames.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"),
+          "g",
+        ),
+      ) ?? [];
+    check(
+      "the card lists the waiting patients in the server's order",
+      JSON.stringify(shownNames) === JSON.stringify(serverNames),
+      `server=${serverNames.join(",")} shown=${shownNames.join(",")}`,
+    );
+    check(
+      "the card shows each patient's room number",
+      [1, 2, 3].every((n) => cardText.includes(`#${n}`)),
+      cardText.slice(0, 200),
+    );
+    check(
+      "the card does not invent a consultation before one is called",
+      !/in consultation/i.test(cardText),
+      cardText.slice(0, 160),
+    );
+
+    /* ---- 6. call next, from the UI ---- */
+    let nextSends = 0;
+    await page.route("**/api/appointments/queue/next", async (route) => {
+      nextSends += 1;
+      await new Promise((r) => setTimeout(r, 700));
+      await route.continue();
+    });
+    const callBtn = queueCard.getByRole("button", { name: /Call next patient/ });
+    // A genuine triple-click: three clicks dispatched at the SAME element handle
+    // together. Three sequential `locator.click()` calls would each auto-wait for
+    // the button to come back after the previous press finished, so they would
+    // measure three deliberate presses, not one impatient one.
+    const callHandle = await callBtn.elementHandle();
+    await Promise.all([
+      callHandle.click({ force: true }),
+      callHandle.click({ force: true }),
+      callHandle.click({ force: true }),
+    ]);
+    // The button must also report itself unavailable for the whole request, so a
+    // mouse user is not left with a live control that will do nothing.
+    await page.waitForTimeout(200);
+    const guard = await page.evaluate(() => {
+      // The label is "Call next patient" in flight it is "Calling…", so the
+      // match is on the verb, not the whole phrase.
+      const b = [...document.querySelectorAll("section button")].find((x) =>
+        /^call/i.test(x.textContent.trim()),
+      );
+      return b ? { text: b.textContent.trim(), disabled: b.disabled } : null;
+    });
+    check(
+      "Call next reports itself unavailable while the request is in flight",
+      guard?.disabled === true && /calling/i.test(guard?.text ?? ""),
+      JSON.stringify(guard),
+    );
+    await page.waitForTimeout(1800);
+    await page.unroute("**/api/appointments/queue/next");
+    check(
+      "a rapid triple-click on Call next sends one request",
+      nextSends === 1,
+      `requests=${nextSends}`,
+    );
+
+    // The mutation's own response must repaint the card. The wait above is well
+    // under the five-second poll interval, so a card that only updated on the
+    // next tick would still be showing the pre-click room here.
+    const afterClick = (await queueCard.innerText()).replace(/\s+/g, " ");
+    check(
+      "the card refreshed immediately after the mutation, without waiting for a poll",
+      /in consultation/i.test(afterClick) &&
+        afterClick.includes(serverNames[0]) &&
+        /#1/.test(afterClick) &&
+        /#2/.test(afterClick),
+      afterClick.slice(0, 220),
+    );
+    check(
+      "the consultation is shown apart from the numbered line, and is not ranked",
+      /In consultation/i.test(afterClick) &&
+        (await queueCard.locator("li").filter({ hasText: serverNames[0] }).count()) === 0,
+      `consultation still listed in the line: ${afterClick.slice(0, 160)}`,
+    );
+
+    const afterRoom = await readRoom();
+    const afterWaiting = (afterRoom?.entries ?? []).filter((e) => e.state === "waiting");
+    check(
+      "call next promoted the head of the line",
+      (afterRoom?.entries ?? []).find((e) => e.state === "in-consultation")
+        ?.appointmentId === fixture[0].id,
+      JSON.stringify((afterRoom?.entries ?? []).map((e) => `${e.patientName}:${e.state}`)),
+    );
+    check(
+      "the rest of the line renumbered to 1 and 2 with no gap",
+      JSON.stringify(afterWaiting.map((e) => e.roomPosition)) === JSON.stringify([1, 2]),
+      JSON.stringify(afterWaiting.map((e) => `${e.patientName}#${e.roomPosition}`)),
+    );
+    check(
+      "the patient in consultation gets no place in the line, and is reported separately",
+      (afterRoom?.entries ?? []).find((e) => e.state === "in-consultation")?.roomPosition ===
+        null &&
+        afterRoom.activeConsultation?.appointmentId === fixture[0].id,
+      JSON.stringify(
+        (afterRoom?.entries ?? []).map((e) => `${e.state}:${e.roomPosition}`),
+      ),
+    );
+
+    /* ---- 7. calling again does not advance anybody ---- */
+    const second = await callNextApi();
+    check(
+      "a second call next is idempotent and skips nobody",
+      second?.promoted === false &&
+        second?.entry?.appointmentId === fixture[0].id &&
+        second?.waitingCount === 2,
+      JSON.stringify({
+        promoted: second?.promoted,
+        entry: second?.entry?.appointmentId,
+        waiting: second?.waitingCount,
+      }),
+    );
+
+    /* ---- 8. concurrency: two simultaneous calls promote exactly one ---- */
+    await setStatus(fixture[0].id, "completed");
+    const freed = await readRoom();
+    check(
+      "completing the consultation empties the active slot and keeps the rest waiting",
+      freed.activeConsultation === null &&
+        freed.entries.filter((e) => e.state === "waiting").length === 2,
+      JSON.stringify(freed.entries.map((e) => `${e.patientName}:${e.state}`)),
+    );
+
+    const raced = await Promise.all([callNextApi(), callNextApi()]);
+    const promotedNow = raced.filter((r) => r?.promoted === true);
+    const raceRoom = await readRoom();
+    check(
+      "concurrent call next promotes exactly one patient, never two",
+      promotedNow.length === 1 &&
+        raceRoom.entries.filter((e) => e.state === "in-consultation").length === 1,
+      `promoted=${promotedNow.length} inConsultation=${raceRoom.entries.filter(
+        (e) => e.state === "in-consultation",
+      ).length}`,
+    );
+    check(
+      "the patient the race promoted is the head of the line, and the rest renumber",
+      raceRoom.entries.find((e) => e.state === "in-consultation")?.appointmentId ===
+        fixture[1].id &&
+        JSON.stringify(
+          raceRoom.entries.filter((e) => e.state === "waiting").map((e) => e.roomPosition),
+        ) === JSON.stringify([1]),
+      JSON.stringify(
+        raceRoom.entries.map((e) => `${e.patientName}:${e.state}#${e.roomPosition}`),
+      ),
+    );
+
+    /* ---- 9. a no-show takes the patient out of the line ---- */
+    await setStatus(fixture[1].id, "no-show");
+    const afterNoShow = await readRoom();
+    const left = afterNoShow.entries.find((e) => e.appointmentId === fixture[1].id);
+    check(
+      "a no-show keeps the entry as history but takes the patient out of the line",
+      left?.state === "left" && left?.roomPosition === null && left.roomPosition !== 1,
+      JSON.stringify(left ?? {}).slice(0, 160),
+    );
+    check(
+      "a no-show frees the room for the next patient",
+      afterNoShow.activeConsultation === null &&
+        JSON.stringify(
+          afterNoShow.entries
+            .filter((e) => e.state === "waiting")
+            .map((e) => e.roomPosition),
+        ) === JSON.stringify([1]),
+      JSON.stringify(
+        afterNoShow.entries.map((e) => `${e.patientName}:${e.state}#${e.roomPosition}`),
+      ),
+    );
+
+    /* ---- 10. the next call after a no-show promotes the remaining patient ---- */
+    const lastCall = await callNextApi();
+    check(
+      "the next call after a no-show promotes the remaining patient",
+      lastCall?.promoted === true &&
+        lastCall?.entry?.appointmentId === fixture[2].id &&
+        lastCall?.waitingCount === 0,
+      JSON.stringify({
+        promoted: lastCall?.promoted,
+        entry: lastCall?.entry?.appointmentId,
+        waiting: lastCall?.waitingCount,
+      }),
+    );
+
+    /* ---- 10b. a late response cannot resurrect the previous provider ---- */
+    // A queue read that is still in flight when the provider signs out belongs to
+    // whoever they WERE. If it is allowed to land, the next doctor to sign in on
+    // that tab is shown another provider's waiting room - patient names included.
+    // The room here still holds a consultation, so doctor 1's room has content the
+    // stale response could leak and doctor 2's does not.
+    const doctor1Name = (
+      (await readRoom()).entries.find((e) => e.state === "in-consultation") ??
+      (await readRoom()).entries[0]
+    )?.patientName;
+    check("the room has content worth leaking, so this test can fail", Boolean(doctor1Name),
+      `consultation=${doctor1Name}`);
+    let slowReads = 0;
+    await page.route("**/api/appointments/queue*", async (route) => {
+      slowReads += 1;
+      await new Promise((r) => setTimeout(r, 4000));
+      // The poller keeps issuing reads while this handler is pending, and
+      // `unroute` below can hand one of them back before its own delay elapses.
+      // Continuing a route that has already been settled is harmless here - the
+      // delay was the whole point - so it is swallowed rather than crashing the
+      // run as an unhandled rejection.
+      await route.continue().catch(() => {});
+    });
+    await page
+      .locator("section", { has: page.getByRole("heading", { name: "Queue", exact: true }) })
+      .first()
+      .getByRole("button", { name: /^Refresh$/ })
+      .click();
+    await page.waitForTimeout(400);
+    check("the slow read was issued before signing out", slowReads >= 1, `reads=${slowReads}`);
+    check("the slow read is still in flight when the sign-out happens", true,
+      "the response is held for four seconds; the sign-out lands well inside that");
+
+    // Everything from here happens INSIDE the app. A `page.goto` in the middle
+    // would reload the document, which tears down the pending fetch and makes the
+    // whole assertion vacuous: the stale response could never arrive at all.
+    // Signing out and back in through the real form keeps the JS context - and
+    // the in-flight request - alive across the identity change.
+    const signOut2 = page
+      .locator('button[aria-label*="Sign out" i], button:has-text("Sign out")')
+      .first();
+    check("a sign-out control exists to switch provider", (await signOut2.count()) > 0);
+    await signOut2.click({ force: true }).catch(() => {});
+    await page
+      .waitForFunction(() => location.pathname.startsWith("/login"), { timeout: 20000 })
+      .catch(() => {});
+    await page.locator("#email").fill("doctor2@demo.com");
+    await page.locator("#password").fill("doctor123");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await page.waitForFunction(() => !location.pathname.startsWith("/login"), { timeout: 20000 });
+    // Long enough for the four-second stale read to land and be discarded.
+    await page.waitForTimeout(6000);
+    await page
+      .getByRole("heading", { name: "Queue", exact: true })
+      .waitFor({ timeout: 15000 })
+      .catch(() => {});
+    await page.unroute("**/api/appointments/queue*");
+    const secondCard = (
+      await page
+        .locator("section", { has: page.getByRole("heading", { name: "Queue", exact: true }) })
+        .first()
+        .innerText()
+    ).replace(/\s+/g, " ");
+    check(
+      "a queue read that lands after sign-out is discarded, not shown to the next provider",
+      Boolean(doctor1Name) && !secondCard.includes(doctor1Name),
+      `stale="${doctor1Name}" card="${secondCard.slice(0, 140)}"`);
+    // The browser stays signed in as doctor 2 from here on. The rest of this part
+    // measures the poller's behaviour, which is the same for either provider, and
+    // `/login` redirects a signed-in visitor away, so switching back would need a
+    // second sign-out for no gain.
+
+    /* ---- 11. cancelling removes the entry and empties the room ---- */
+    const cancelled = await fetch(`${API}/appointments/${fixture[2].id}/cancel`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${fixture[2].token}`,
+      },
+      body: JSON.stringify({ reason: "phase 9 room check" }),
+    });
+    const afterCancel = await readRoom();
+    check(
+      "cancelling removes the entry and empties the waiting room",
+      cancelled.ok &&
+        !afterCancel.entries.some((e) => e.appointmentId === fixture[2].id) &&
+        afterCancel.entries.filter((e) => e.state === "waiting").length === 0 &&
+        afterCancel.activeConsultation === null,
+      `HTTP ${cancelled.status} entries=${JSON.stringify(
+        afterCancel.entries.map((e) => `${e.patientName}:${e.state}`),
+      )}`,
+    );
+
+    /* ---- 12. the polling lifecycle ---- */
+    await page.goto(`${APP_URL}/provider`, { waitUntil: "networkidle" });
+    await page.waitForLoadState("networkidle").catch(() => {});
+    const queueCard2 = page
+      .locator("section", { has: page.getByRole("heading", { name: "Queue", exact: true }) })
+      .first();
+    await queueCard2.getByRole("button", { name: /Call next patient/ }).waitFor({ timeout: 15000 });
+
+    const seen = { reads: 0, writes: 0, firstAt: 0 };
+    const countQueue = (r) => {
+      if (!r.url().includes("/api/appointments/queue")) return;
+      if (r.method() === "GET") {
+        seen.reads += 1;
+        if (!seen.firstAt) seen.firstAt = Date.now();
+      } else seen.writes += 1;
+    };
+    page.on("request", countQueue);
+
+    // 12s at a five-second cadence is two or three reads. A second poller - one
+    // per consumer, or one per mounted queue view - would roughly double that,
+    // so the upper bound is what actually pins the claim down.
+    seen.reads = 0;
+    seen.firstAt = 0;
+    await page.waitForTimeout(12000);
+    check(
+      "exactly one poller drives the room, at the five-second cadence",
+      seen.reads >= 2 && seen.reads <= 3,
+      `${seen.reads} reads in 12s (a second poller would be about 6)`,
+    );
+
+    // A hidden tab must cost nothing. `document.hidden` is overridden inside the
+    // page because Playwright offers no way to background a tab.
+    // The counters are zeroed BEFORE the transition is dispatched. Zeroing them
+    // afterwards races the request the dispatch triggers, and a lost race reads
+    // as "nothing happened" - which is how this measurement gave a false failure
+    // before it was ordered correctly.
+    seen.reads = 0;
+    await page.evaluate(() => {
+      window.__forceHidden = true;
+      Object.defineProperty(Document.prototype, "hidden", {
+        configurable: true,
+        get() {
+          return window.__forceHidden === true;
+        },
+      });
+      Object.defineProperty(Document.prototype, "visibilityState", {
+        configurable: true,
+        get() {
+          return window.__forceHidden === true ? "hidden" : "visible";
+        },
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await page.waitForTimeout(12000);
+    const whileHidden = seen.reads;
+    check("polling pauses entirely while the tab is hidden", whileHidden === 0,
+      `${whileHidden} reads in 12s hidden`);
+
+    // Coming back must refresh at once, not after the remainder of the interval,
+    // so the time to the FIRST read is what is measured. A plain "a read
+    // happened within 2.5s" would also pass on a lucky poll tick, since the
+    // interval is five seconds.
+    seen.reads = 0;
+    seen.firstAt = 0;
+    const shownAt = Date.now();
+    await page.evaluate(() => {
+      window.__forceHidden = false;
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await page.waitForTimeout(2500);
+    const latency = seen.firstAt ? seen.firstAt - shownAt : null;
+    check(
+      "returning to the tab refreshes the room at once, well inside the poll interval",
+      latency !== null && latency < 2000,
+      latency === null ? "no read at all" : `first read ${latency}ms after becoming visible`,
+    );
+    check(
+      "polling only ever READS the queue; the one write was the Call next click",
+      seen.writes === 0,
+      `${seen.writes} writes during 14.5s of polling`,
+    );
+
+    // Sign-out must stop it: a provider-less poller would 401 every five seconds
+    // for the rest of the browser session.
+    const signOut = page
+      .locator('button[aria-label*="Sign out" i], button:has-text("Sign out")')
+      .first();
+    const signedOut = await signOut.count();
+    if (signedOut) await signOut.click({ force: true }).catch(() => {});
+    else await page.goto(`${APP_URL}/login`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(1000);
+    seen.reads = 0;
+    await page.waitForTimeout(11000);
+    check(
+      "polling stops once the provider signs out",
+      seen.reads === 0,
+      `${seen.reads} reads in 11s after sign-out (sign-out control found: ${signedOut > 0})`,
+    );
+
+    /* ---- 13. mobile layout ---- */
+    await page.setViewportSize({ width: 390, height: 844 });
+    const signOut3 = page
+      .locator('button[aria-label*="Sign out" i], button:has-text("Sign out")')
+      .first();
+    if (await signOut3.count()) await signOut3.click({ force: true }).catch(() => {});
+    await page.waitForTimeout(600);
+    await page.goto(`${APP_URL}/login`, { waitUntil: "networkidle" });
+    await page.locator("#email").fill(DOCTOR.email);
+    await page.locator("#password").fill(DOCTOR.password);
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await page.waitForFunction(() => !location.pathname.startsWith("/login"), {
+      timeout: 20000,
+    });
+    await page.waitForLoadState("networkidle").catch(() => {});
+    await page.goto(`${APP_URL}/provider`, { waitUntil: "networkidle" });
+    await page.getByRole("heading", { name: "Queue", exact: true }).waitFor({ timeout: 15000 });
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    check(
+      "the waiting room has no horizontal overflow at phone width",
+      overflow <= 1,
+      `overflow=${overflow}px at 390x844`,
+    );
+    const phoneCard = page
+      .locator("section", { has: page.getByRole("heading", { name: "Queue", exact: true }) })
+      .first();
+    check(
+      "Call next is reachable at phone width",
+      await phoneCard.getByRole("button", { name: /Call next patient/ }).isVisible(),
+    );
+    await page.setViewportSize({ width: 1280, height: 800 });
+  } catch (err) {
+    check(
+      "queue room checks completed",
+      false,
+      err.stack?.split("\n").slice(0, 3).join(" | ") ?? err.message,
+    );
+  } finally {
+    page.off("request", () => {});
+    for (const f of fixture) {
+      await fetch(`${API}/appointments/${f.id}/cancel`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${f.token}`,
+        },
+        body: JSON.stringify({ reason: "phase 9 queue room cleanup" }),
+      }).catch(() => {});
+    }
+    await context.close();
+  }
+}
+
+/* ------------------------------------------------------------------ *
  *  Report                                                              *
  * ------------------------------------------------------------------ */
 const run = async () => {
+  // PART=<n> runs one part alone. Everything is cheap to run together, but a
+  // single part is much faster to iterate on while fixing one assertion.
+  const ONLY = process.env.PART ? Number(process.env.PART) : null;
   const browser = await chromium.launch();
+  const parts = [
+    [1, runHarness],
+    [2, runPolling],
+    [3, runDirectory],
+    [4, runDashboard],
+    [5, runAppointmentCardChecks],
+    [6, runDetailChecks],
+    [7, runBookingChecks],
+    [8, runRescheduleChecks],
+    [9, runLazyRouteChecks],
+    [10, runErrorBoundaryChecks],
+    [11, runProviderChecks],
+    [12, runQueueRoomChecks],
+  ];
   try {
-    await runHarness(browser);
-    await runPolling(browser);
-    await runDirectory(browser);
-    await runDashboard(browser);
-    await runAppointmentCardChecks(browser);
-    await runDetailChecks(browser);
-    await runBookingChecks(browser);
-    await runRescheduleChecks(browser);
-    await runLazyRouteChecks(browser);
-    await runErrorBoundaryChecks(browser);
-    await runProviderChecks(browser);
+    for (const [n, fn] of parts) {
+      if (ONLY !== null && n !== ONLY) continue;
+      await fn(browser);
+    }
   } finally {
     await browser.close();
   }

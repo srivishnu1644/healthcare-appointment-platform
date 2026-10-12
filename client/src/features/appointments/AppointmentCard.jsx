@@ -106,10 +106,13 @@ export function AppointmentCard({
           )}
           <StatusBadge status={a.status} />
           {a.mode === "video" && <span className="badge badge-violet">Video</span>}
-          {/* Only when the payload actually carries one. The list projection
-              sends null, so this is normally hidden. */}
+          {/* Where this patient is in the waiting room, and nothing about
+              anyone else. `queuePosition` is the place in the LINE, so a patient
+              already with the doctor has none and shows a state instead. */}
           {a.queuePosition ? (
             <span className="badge badge-info">Queue #{a.queuePosition}</span>
+          ) : a.queueState === "in-consultation" ? (
+            <span className="badge badge-info">In consultation</span>
           ) : null}
         </div>
 
