@@ -260,11 +260,41 @@ const run = async () => {
       .getByRole("heading", { level: 1, name: /Dr\./ })
       .first()
       .waitFor({ timeout: 30000 });
+      for (const section of [
+        /Today's appointments/i,
+        /Schedule/i,
+        /Queue/i,
+      ]) {
+        await page
+          .getByRole("heading", { name: section })
+          .first()
+          .waitFor({ timeout: 30000 });
+      }
+  });
+  await step(ctx, page, "Refresh the doctor queue", async () => {
+    // The previous step already signed in as the provider and left us here.
     await page
-      .getByRole("heading", { name: /Today's slots/i })
+      .getByRole("heading", { name: /Queue/i })
       .first()
       .waitFor({ timeout: 30000 });
+    const card = page
+      .locator("section", { has: page.getByRole("heading", { name: /Queue/i }) })
+      .first();
+    const refresh = card.getByRole("button", { name: /Refresh/ });
+    await refresh.waitFor({ timeout: 15000 });
+    await refresh.click();
+    // The button must settle back to its idle label, which only happens once the
+    // request it triggered has come back.
+    await page
+      .getByRole("button", { name: /^Refresh$/ })
+      .first()
+      .waitFor({ timeout: 20000 });
+    const text = (await card.innerText()).replace(/\s+/g, " ");
+    if (!/waiting/.test(text)) {
+      throw new Error(`the queue card lost its summary after a refresh: ${text.slice(0, 120)}`);
+    }
   });
+
 
   await step(ctx, page, "Sign out and reach login", async () => {
     await signOut(page);

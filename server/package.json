@@ -27,6 +27,7 @@
     "test:slots": "node scripts/slot-check.js",
     "test:appointments": "node scripts/appointment-check.js",
     "test:queue": "node scripts/queue-check.js",
+    "test:flow": "node scripts/doctor-flow-check.js",
     "test:schema": "node src/db/scripts/verify-schema.js",
     "db:local": "node scripts/local-postgres.js",
     "db:migrate": "node src/db/migrate.js",

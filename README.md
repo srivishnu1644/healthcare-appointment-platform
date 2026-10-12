@@ -83,8 +83,16 @@ server transforms JSX for `checks.html`.
 | `npm --prefix server run test:slots` | Slots, availability, timezone |
 | `npm --prefix server run test:appointments` | Booking, conflicts, lifecycle, check-in |
 | `npm --prefix server run test:queue` | Queue positions, ordering, authorization |
+| `npm --prefix server run test:flow` | One patient's visit, end to end, from the doctor |
 | `npm --prefix server run test:schema` | Migrations are applied and consistent |
 | `npm --prefix server run test:all` | Schema, queue and appointment suites |
+
+`test:flow` walks the whole visit in order — sign in, open the workspace, open a
+slot, a patient books it, check in once it has started, the patient appears in
+the doctor's queue, the doctor completes it, and the schedule and queue both
+reflect that. It asserts the refusals on the way too, so "it worked" means
+something: an illegal transition, a second patient checking in on someone else's
+visit, and another doctor reaching in are all expected to fail.
 
 `test:queue` checks patients in through the real endpoint. A queue entry only
 exists for a slot that has already started, so when the seed happens to leave
@@ -96,6 +104,36 @@ printed reason** rather than silently passing if the bound is exceeded.
 remove their own fixtures when they finish (and on the crash path too). That
 makes them repeatable against the same database. The auth rate limiter counts
 logins per process, so restart the API between heavy suites if you see 429s.
+
+Each section of `test:appointments` needs fixture patients that no other section
+has booked. Every fixture sits at a controlled instant around "now", so two
+sections that happen to land on overlapping times would collide and the loser
+would be refused with `PATIENT_CLASH` — a clash between two fixtures, not the
+rule under test. That is why the run creates five throwaway patients rather than
+three and hands each section its own pair.
+
+`test:security` also books a real appointment, because check-in cannot be
+asserted against a fixture row. It needs a slot dated today that has already
+started, which depends on the hour, so it prefers a slot an earlier run left
+behind, opens one in the earliest free window if there is none, and cancels the
+appointment when it finishes — otherwise the patient would clash with the next
+suite. It is therefore repeatable, and it leaves at most one slot behind.
+
+`scripts/hook-checks.mjs` creates two slots per run to exercise slot creation
+and has no delete endpoint to undo them with. It reads the free windows of each
+day from the API and walks to the next date when a day fills up, so it stays
+green across repeated runs, but a long-lived local database does accumulate
+slots from it.
+
+Its provider queue checks book **two** appointments and check both patients in,
+because an ordering assertion over one row proves nothing. Those two are
+cancelled at the end, which returns the slots to `available` so the next run
+reuses them. Completing a consultation is the exception: `completed` is a
+terminal status with no transition back, and no endpoint deletes an appointment,
+so that one appointment per run stays in the day's queue. It stops the morning
+from running out of check-in-able slots, at which point `test:appointments`
+reports that the day is full and needs a fresh database — recreate with
+`db:migrate` and `db:seed` rather than treating it as a failure.
 
 The suites that assert seed invariants (`test:schema`) want a database that has
 not been used by the others, so point `DATABASE_URL` at a fresh one:
@@ -259,6 +297,32 @@ zero external dependencies:
 - **Notifications are stored and displayed in-app** — no email/SMS delivery.
 - **Auth limiter is skipped when `NODE_ENV !== "production"`** so the smoke
   suite can be re-run freely. Production traffic stays rate-limited.
+
+### The queue model (carry into Phase 9)
+
+The waiting room is **per appointment slot**, not one room per doctor, and that
+shapes everything the queue can show:
+
+- A slot holds a single active appointment (`bookingService.findActiveForSlot`),
+  so a slot's queue has one member and **every position is `1`**. The doctor
+  queue prints the position the server sends and says so on the card; it never
+  invents a running number.
+- Ordering is therefore by appointment start time
+  (`ORDER BY sl.starts_at, q.position`) rather than by arrival at the door.
+- There is **no queue-state endpoint**. `queueRepo.setState` has exactly one
+  caller — completing an appointment. A doctor cannot call the next patient or
+  move an entry between `waiting`, `in-consultation` and `left`, so the UI
+  offers only the transitions `ALLOWED_TRANSITIONS` permits and says nothing
+  about queue state changing.
+- `GET /appointments/queue` returns **no appointment time**: `listForDoctor`
+  selects `start_time` but `toEntry` drops it. The dashboard joins the entry to
+  the appointment it already fetched rather than the server inventing one.
+- `averageWaitMinutes` is a queue-wide figure (`waiting × 15`). The per-patient
+  estimate exists only on the check-in response, so the queue does not show one.
+
+Turning this into a real room — one queue per doctor, positions that mean
+something, and a way for a doctor to advance it — is Phase 9 work and needs a
+new endpoint, which is why nothing here assumes one.
 
 Accessibility, keyboard-navigable modals, empty/loading/error states, and
 responsive layouts are handled in the client; the design tokens in

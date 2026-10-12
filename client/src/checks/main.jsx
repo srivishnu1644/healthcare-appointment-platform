@@ -26,8 +26,12 @@ import {
   hasStarted,
   isBookableSlot,
   isUpcoming,
+  joinedAgo,
+  joinQueueWithAppointments,
+  minutesSinceJoin,
   splitByTime,
   startInstant,
+  summariseDay,
 } from "../utils/appointments";
 import useAppointments from "../hooks/useAppointments.js";
 import useDoctorSlots from "../hooks/useDoctorSlots.js";
@@ -508,6 +512,145 @@ async function checkApiClient() {
 
   clearToken();
   window.__net.reset();
+}
+
+/**
+ * The provider dashboard's day classification, against controlled data.
+ *
+ * The live dashboard comparison cannot prove this by itself: on a freshly
+ * seeded database the provider often has nothing booked today, so "0 equals 0"
+ * would pass for the wrong reason. These cases pin the rules directly.
+ */
+function checkSummariseDay() {
+  const TODAY = "2026-03-11";
+  const at = (time) => Date.parse(`${TODAY}T${time}:00`);
+  const appt = (time, status, extra = {}) => ({
+    id: extra.id ?? time,
+    date: TODAY,
+    startTime: time,
+    status,
+    ...extra,
+  });
+
+  const now = at("12:00");
+  const rows = [
+    appt("09:00", "completed"),
+    appt("10:00", "in-progress"),
+    appt("11:00", "confirmed"),
+    appt("14:00", "confirmed"),
+    { ...appt("15:00", "confirmed"), date: "2026-03-12" },
+    { ...appt("16:00", "cancelled"), date: "2026-03-12" },
+  ];
+
+  const s = summariseDay(rows, { now, today: TODAY });
+
+  ok("only the clinic's own calendar date counts as today",
+    s.todayCount === 4, `todayCount=${s.todayCount}`);
+  ok("a visit later today still counts as today", s.todays.some((a) => a.startTime === "14:00"));
+  ok("a visit already under way is still today's", s.todays.some((a) => a.startTime === "10:00"));
+
+  ok("completed is counted separately", s.completed.length === 1, `${s.completed.length}`);
+  ok("without queue data the status is used as a fallback",
+    s.checkedIn.length === 1 && s.checkedInIsAuthoritative === false);
+
+  // The authoritative case: an appointment can be in-progress because a provider
+  // set it directly, with no queue entry, and must not count as checked in.
+  const authoritative = summariseDay(rows, {
+    now,
+    today: TODAY,
+    checkedInIds: new Set(["11:00"]),
+  });
+  ok("checked in is driven by the queue entry, not the status",
+    authoritative.checkedInIsAuthoritative === true);
+  ok("an in-progress visit with no queue entry is not counted as checked in",
+    authoritative.checkedIn.length === 1 &&
+      authoritative.checkedIn[0].startTime === "11:00",
+    `got ${authoritative.checkedIn.map((a) => a.startTime).join(",")}`);
+  ok("today's total is unaffected by which check-in source is used",
+    authoritative.todayCount === s.todayCount);
+  ok("cancelled visits are not today's problem",
+    !s.todays.some((a) => a.status === "cancelled"));
+  ok("a cancelled future visit is never next up", s.next?.status !== "cancelled");
+
+  ok("next up is the soonest visit that has not started",
+    s.next?.startTime === "14:00", `got ${s.next?.startTime}`);
+
+  // The boundary: a visit starting at exactly this instant has begun.
+  const edge = summariseDay([appt("12:00", "confirmed")], { now, today: TODAY });
+  ok("a visit starting exactly now is not offered as next up",
+    edge.next === null, `got ${edge.next?.startTime}`);
+
+  const edgeLater = summariseDay([appt("12:00", "confirmed"), appt("12:01", "confirmed")], {
+    now,
+    today: TODAY,
+  });
+  ok("the next visit after now is picked by instant, not by list order",
+    edgeLater.next?.startTime === "12:01", `got ${edgeLater.next?.startTime}`);
+
+  ok("an empty day summarises to zeros, not nulls",
+    summariseDay([], { now, today: TODAY }).todayCount === 0);
+  ok("a missing list is treated as empty rather than throwing",
+    summariseDay(undefined, { now, today: TODAY }).todayCount === 0);
+}
+
+/* ------------------------------------------------------------------ *
+ *  Queue helpers                                                       *
+ * ------------------------------------------------------------------ */
+
+function checkQueueHelpers() {
+  const now = Date.parse("2026-03-11T06:30:00.000Z");
+
+  // Elapsed time is a difference between two instants, so it cannot be wrong
+  // the way a formatted clock reading is when the browser is not in the
+  // clinic's timezone.
+  ok("minutes since joining is counted from the instant",
+    minutesSinceJoin("2026-03-11T06:18:00.000Z", now) === 12,
+    `${minutesSinceJoin("2026-03-11T06:18:00.000Z", now)}`);
+  ok("a join in the same minute reads as just now",
+    joinedAgo("2026-03-11T06:30:00.000Z", now) === "just now");
+  ok("a join 12 minutes ago reads as 12 min ago",
+    joinedAgo("2026-03-11T06:18:00.000Z", now) === "12 min ago");
+  ok("a clock skew that reports a future join does not go negative",
+    minutesSinceJoin("2026-03-11T07:00:00.000Z", now) === 0,
+    `${minutesSinceJoin("2026-03-11T07:00:00.000Z", now)}`);
+  ok("a missing join time is unknown, not zero",
+    minutesSinceJoin(null, now) === null && joinedAgo(undefined, now) === null);
+  ok("an unparseable join time is unknown, not zero",
+    minutesSinceJoin("not-a-date", now) === null);
+
+  // Joining a queue entry to its appointment must not reorder or renumber.
+  const entries = [
+    { id: "e1", appointmentId: "a2", position: 1, patientName: "Second" },
+    { id: "e2", appointmentId: "a1", position: 1, patientName: "First" },
+  ];
+  const appointments = [
+    { id: "a1", startTime: "09:00", status: "in-progress", reason: "Check-up" },
+    { id: "a2", startTime: "10:00", status: "in-progress", reason: "Fever" },
+  ];
+  const joined = joinQueueWithAppointments(entries, appointments);
+  ok("the server's queue order is preserved exactly",
+    joined.map((r) => r.id).join(",") === "e1,e2",
+    joined.map((r) => r.id).join(","));
+  ok("positions are passed through untouched",
+    joined.every((r) => r.position === 1));
+  ok("each entry is paired with its own appointment",
+    joined[0].appointment?.startTime === "10:00" &&
+      joined[1].appointment?.startTime === "09:00",
+    `${joined[0].appointment?.startTime},${joined[1].appointment?.startTime}`);
+  ok("the appointment supplies the status and reason",
+    joined[0].appointment?.status === "in-progress" &&
+      joined[0].appointment?.reason === "Fever");
+
+  const orphan = joinQueueWithAppointments(
+    [{ id: "e3", appointmentId: "missing", position: 1 }],
+    appointments,
+  );
+  ok("an entry whose appointment is absent is kept, not dropped",
+    orphan.length === 1 && orphan[0].appointment === null);
+  ok("an empty queue joins to an empty list",
+    joinQueueWithAppointments([], appointments).length === 0);
+  ok("a missing queue payload is treated as empty rather than throwing",
+    joinQueueWithAppointments(undefined, undefined).length === 0);
 }
 
 /* ------------------------------------------------------------------ *
@@ -1051,8 +1194,10 @@ function checkBookableSlot() {
     await checkDashboard();
     await checkAppointmentCard();
     await checkStatusTimeline();
-      await checkApiClient();
-      await checkErrorBoundary();
+    checkSummariseDay();
+    checkQueueHelpers();
+    await checkApiClient();
+    await checkErrorBoundary();
   } catch (err) {
     ok("harness completed without throwing", false, err?.message || String(err));
   }

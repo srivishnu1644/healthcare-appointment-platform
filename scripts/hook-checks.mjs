@@ -60,6 +60,7 @@
  *   pinned to Asia/Kolkata can reproduce it rather than simulate it.
  */
 import { chromium } from "playwright";
+import { readFile } from "node:fs/promises";
 
 const APP_URL = process.env.APP_URL || "http://localhost:5174";
 const HARNESS_URL = process.env.HARNESS_URL || APP_URL;
@@ -1537,6 +1538,756 @@ async function runErrorBoundaryChecks(browser) {
   await context.close();
 }
 
+/**
+ * Provider (doctor) dashboard.
+ *
+ * Driven against the real API as a signed-in doctor, and compared with values
+ * computed independently from the API, so the assertions cannot drift with the
+ * UI. Access control is checked from the other side too: a patient and an
+ * anonymous visitor must not reach protected provider data.
+ */
+async function runProviderChecks(browser) {
+  const context = await browser.newContext({ timezoneId: TZ });
+  const page = await context.newPage();
+  const DOCTOR = { email: "doctor1@demo.com", password: "doctor123" };
+
+  const login = async (p, creds) => {
+    await p.goto(`${APP_URL}/login`, { waitUntil: "networkidle" });
+    await p.locator("#email").fill(creds.email);
+    await p.locator("#password").fill(creds.password);
+    await p.getByRole("button", { name: "Sign in" }).click();
+    await p
+      .waitForFunction(() => !location.pathname.startsWith("/login"), { timeout: 20000 })
+      .catch(() => {});
+    await p.waitForLoadState("networkidle").catch(() => {});
+  };
+
+  /* ---- access control, from the outside in ---- */
+  const anon = await browser.newContext({ timezoneId: TZ });
+  const anonPage = await anon.newPage();
+  await anonPage.goto(`${APP_URL}/provider`, { waitUntil: "networkidle" });
+  check("an anonymous visitor cannot reach the provider dashboard",
+    new URL(anonPage.url()).pathname === "/login", anonPage.url());
+  const anonBody = await anonPage.locator("body").innerText().catch(() => "");
+  check("no provider data leaks to an anonymous visitor",
+    !/Schedule|Nobody is waiting|checked in .* min ago/.test(anonBody),
+    anonBody.slice(0, 100).replace(/\s+/g, " "));
+
+  await login(anonPage, PATIENT);
+  await anonPage.goto(`${APP_URL}/provider`, { waitUntil: "networkidle" });
+  check("a patient cannot reach the provider dashboard",
+    new URL(anonPage.url()).pathname === "/dashboard", anonPage.url());
+  const patientBody = await anonPage.locator("body").innerText().catch(() => "");
+  check("no provider data leaks to a patient",
+    !/Schedule|Nobody is waiting|checked in .* min ago/.test(patientBody),
+    patientBody.slice(0, 100).replace(/\s+/g, " "));
+
+  // The provider endpoint itself must refuse a patient, independent of the UI.
+  const patientSession = await loginViaApi(PATIENT);
+  const forbidden = await fetch(`${API}/doctors/me/schedule`, {
+    headers: { Authorization: `Bearer ${patientSession.token}` },
+  });
+  check("the provider schedule API refuses a patient", forbidden.status === 403,
+    `HTTP ${forbidden.status}`);
+  await anon.close();
+
+  /* ---- the dashboard, as the real doctor ---- */
+  await login(page, DOCTOR);
+  check("signing in as a provider lands on /provider",
+    new URL(page.url()).pathname === "/provider", page.url());
+
+  await page.goto(`${APP_URL}/provider`, { waitUntil: "networkidle" });
+  await page.waitForLoadState("networkidle").catch(() => {});
+  const body = await page.locator("body").innerText();
+  const text = body.replace(/\s+/g, " ");
+
+  check("the provider dashboard shows the signed-in provider's own name",
+    /Dr\./.test(text), text.slice(0, 120));
+  check("the dashboard has a today overview", /Today/.test(text));
+  check("the dashboard shows today's appointments", /Today's appointments/.test(text));
+  check("the dashboard shows a schedule section", /Schedule/.test(text));
+  check("the dashboard shows the queue",
+    (await page.getByRole("heading", { name: "Queue", exact: true }).count()) === 1);
+
+  /* ---- counts agree with the API ---- */
+  const session = await loginViaApi(DOCTOR);
+  const schedule = await (
+    await fetch(`${API}/doctors/me/schedule`, {
+      headers: { Authorization: `Bearer ${session.token}` },
+    })
+  ).json();
+  const appts = schedule.data?.appointments ?? [];
+  const todayISO_ = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
+  const todays = appts.filter((a) => a.date === todayISO_);
+  // Checked in is defined by an ACTIVE queue entry, matching the dashboard and
+  // the server: an appointment the provider merely marked in-progress has not
+  // checked in.
+  const queueToday = await (
+    await fetch(`${API}/appointments/queue?doctorId=${schedule.data.doctor.id}&date=${todayISO_}`, {
+      headers: { Authorization: `Bearer ${session.token}` },
+    })
+  ).json();
+  const activeIds = new Set(
+    (queueToday.data?.entries ?? [])
+      .filter((e) => e.state === "waiting" || e.state === "in-consultation")
+      .map((e) => e.appointmentId),
+  );
+  const checkedIn = todays.filter((a) => activeIds.has(a.id)).length;
+  const statusOnlyInProgress = todays.filter((a) => a.status === "in-progress").length;
+  const completed = todays.filter((a) => a.status === "completed").length;
+
+  // Read the tiles structurally. `Stat` renders .stat-label / .stat-value /
+  // .stat-sub, so a value is read from the DOM rather than scraped out of the
+  // flattened page text, where a label can be followed by its own sub-text.
+  const statValue = async (label) => {
+    const tile = page
+      .locator(".stat")
+      .filter({ has: page.locator(".stat-label", { hasText: label }) })
+      .first();
+    if (!(await tile.count())) return null;
+    const value = tile.locator(".stat-value");
+    return (await value.count()) ? (await value.innerText()).trim() : null;
+  };
+  const shownCheckedIn = await statValue("Checked in");
+  check("the checked-in count matches the queue, not the raw status",
+    shownCheckedIn === String(checkedIn),
+    `ui=${shownCheckedIn} queue=${checkedIn} statusOnly=${statusOnlyInProgress}`);
+  for (const [label, expected] of [
+    ["Appointments", todays.length],
+    ["Completed", completed],
+  ]) {
+    const shown = await statValue(label);
+    check(`the ${label.toLowerCase()} count matches the API`, shown === String(expected),
+      `ui=${shown} api=${expected}`);
+  }
+  // A patient name and a real status must appear for today's live visits.
+  for (const a of todays.filter((x) => x.status !== "cancelled")) {
+    check(`today's list names ${a.patientName}`, text.includes(a.patientName));
+    break;
+  }
+
+  /* ---- empty-schedule state is real, not fabricated ---- */
+  check("the dashboard never shows placeholder names",
+    !/John Doe|Jane Doe|Lorem ipsum|Test Patient/i.test(text));
+  check("the dashboard never shows a made-up doctor id",
+    !/doctor-\d|hardcoded/i.test(text));
+
+  /* ---- failure and retry ---- */
+  let failedOnce = false;
+  // The client requests `/doctors/me/schedule?date=…`, so the glob has to tolerate
+  // the query string or the route never fires.
+  await page.route("**/api/doctors/me/schedule*", (route) => {
+    if (!failedOnce) {
+      failedOnce = true;
+      return route.fulfill({ status: 500, contentType: "application/json",
+        body: JSON.stringify({ success: false, message: "boom" }) });
+    }
+    return route.continue();
+  });
+  await page.reload({ waitUntil: "networkidle" }).catch(() => {});
+  await page.waitForTimeout(800);
+  const errorBody = (await page.locator("body").innerText()).replace(/\s+/g, " ");
+  check("a schedule failure surfaces a visible error rather than an empty page",
+    /boom|went wrong|Could not/i.test(errorBody), errorBody.slice(0, 140));
+  await page.unroute("**/api/doctors/me/schedule*");
+
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForLoadState("networkidle").catch(() => {});
+  check("the dashboard recovers on reload",
+    (await page.getByRole("heading", { name: "Queue", exact: true }).count()) === 1);
+
+  /* ---- schedule management: create, conflict, block, reopen ---- */
+  const doctorIdForSlots = schedule.data.doctor.id;
+  const doctorAuth = { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` };
+  const patientAuth = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${patientSession.token}`,
+  };
+
+  const candidateDates = schedule.data.dates ?? [];
+  check("the provider has a future date with slots to manage", candidateDates.length > 0,
+    JSON.stringify(candidateDates).slice(0, 80));
+
+  if (candidateDates.length) {
+    const hhmm = (m) =>
+      `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+    const toMin = (hhmmStr) => {
+      const [h, m] = String(hhmmStr).split(":").map(Number);
+      return h * 60 + m;
+    };
+    // The slot API refuses to re-create an existing slot, so a fixed time would
+    // collide with whatever an earlier run left behind and quietly turn a
+    // creation test into a conflict test. The free windows of a day are read
+    // from the API instead, and if a day has none left the next one is tried:
+    // this suite creates two slots per run and they stay on the calendar.
+    let madeData = null;
+    let chosen = [];
+    let chosenDate = null;
+    for (const day of candidateDates.slice(0, 6)) {
+      if (madeData?.createdCount === 2) break;
+      const existing = (
+        await fetch(`${API}/doctors/${doctorIdForSlots}/slots?date=${day}`)
+          .then((r) => r.json())
+      )?.data?.slots ?? [];
+      const busy = existing.map((x) => [toMin(x.startTime), toMin(x.endTime)]);
+      const freeStarts = [];
+      for (let m = 0; m + 30 <= 1440; m += 1) {
+        if (!busy.some(([f, t]) => m < t && f < m + 30)) freeStarts.push(m);
+      }
+      // Well-separated windows, so two consecutive attempts cannot overlap.
+      for (let attempt = 0; attempt < 6 && madeData?.createdCount !== 2; attempt += 1) {
+        const start = freeStarts[attempt * 30];
+        if (start === undefined) break;
+        chosen = [hhmm(start), hhmm(start + 30)];
+        chosenDate = day;
+        madeData = (
+          await fetch(`${API}/doctors/${doctorIdForSlots}/slots`, {
+            method: "POST",
+            headers: doctorAuth,
+            body: JSON.stringify({
+              date: day,
+              // The same time twice: de-duplicated by the service before it can
+              // reach the database, so it is not reported as a skip.
+              times: [chosen[0], chosen[0], chosen[1]],
+              duration: 30,
+              mode: "in-person",
+              maxQueue: 3,
+            }),
+          }).then((r) => r.json())
+        )?.data ?? {};
+      }
+    }
+    check("a provider can create slots", madeData?.createdCount === 2,
+      `created=${madeData?.createdCount} at ${chosen.join(",")} ` +
+        JSON.stringify(madeData?.skipped ?? []).slice(0, 140));
+    // A time repeated WITHIN one request is de-duplicated by the service before
+    // it reaches the database, so it is not a "skipped" entry; only a slot that
+    // already exists produces a skip reason.
+    check("a repeated time within one request is de-duplicated, not created twice",
+      madeData?.createdCount === 2, `created=${madeData?.createdCount}`);
+
+    // The same times again: the slots already exist, so nothing is created and
+    // the refusal is reported with a reason rather than silently accepted.
+    const again = await fetch(`${API}/doctors/${doctorIdForSlots}/slots`, {
+      method: "POST",
+      headers: doctorAuth,
+      body: JSON.stringify({
+        date: chosenDate,
+        times: chosen,
+        duration: 30,
+        mode: "in-person",
+        maxQueue: 3,
+      }),
+    }).then((r) => r.json());
+    const againSkipped = again?.data?.skipped ?? [];
+    check("re-creating an existing slot creates nothing",
+      (again?.data?.createdCount ?? 0) === 0, `created=${again?.data?.createdCount}`);
+    check("re-creating an existing slot is reported with a reason",
+      againSkipped.length > 0 &&
+        againSkipped.every((s) => s.reason === "duplicate" || s.reason === "overlaps"),
+      JSON.stringify(againSkipped).slice(0, 160));
+
+    const slotId = (madeData.created ?? [])[0]?.id;
+    check("the created slot is returned with an id", Boolean(slotId));
+
+    if (slotId) {
+      const blocked = await fetch(`${API}/doctors/${doctorIdForSlots}/slots/${slotId}`, {
+        method: "PATCH", headers: doctorAuth, body: JSON.stringify({ status: "blocked" }),
+      });
+      check("a provider can block their own slot", blocked.status === 200,
+        `HTTP ${blocked.status}`);
+      const afterBlock = await fetch(`${API}/doctors/${doctorIdForSlots}/slots?date=${chosenDate}`)
+        .then((r) => r.json());
+      check("the blocked state is readable back",
+        (afterBlock?.data?.slots ?? []).some((s) => s.id === slotId && s.status === "blocked"));
+
+      const reopened = await fetch(`${API}/doctors/${doctorIdForSlots}/slots/${slotId}`, {
+        method: "PATCH", headers: doctorAuth, body: JSON.stringify({ status: "available" }),
+      });
+      check("a provider can reopen a blocked slot", reopened.status === 200,
+        `HTTP ${reopened.status}`);
+      const afterReopen = await fetch(`${API}/doctors/${doctorIdForSlots}/slots?date=${chosenDate}`)
+        .then((r) => r.json());
+      check("the reopened state is reflected after the mutation",
+        (afterReopen?.data?.slots ?? []).some((s) => s.id === slotId && s.status === "available"));
+
+      const byPatient = await fetch(`${API}/doctors/${doctorIdForSlots}/slots/${slotId}`, {
+        method: "PATCH", headers: patientAuth, body: JSON.stringify({ status: "blocked" }),
+      });
+      check("a patient cannot change a provider's slots", byPatient.status === 403,
+        `HTTP ${byPatient.status}`);
+
+      const byOtherDoctor = await fetch(`${API}/doctors/${doctorIdForSlots}/slots/${slotId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${(await loginViaApi({ email: "doctor2@demo.com", password: "doctor123" })).token}` },
+        body: JSON.stringify({ status: "blocked" }),
+      });
+      check("another provider cannot change these slots", byOtherDoctor.status === 403,
+        `HTTP ${byOtherDoctor.status}`);
+    }
+  }
+
+  /* ---- status transitions: the server owns the rules ---- */
+  const missingAppt = await fetch(
+    `${API}/appointments/00000000-0000-4000-8000-000000000000/status`,
+    { method: "PATCH", headers: doctorAuth, body: JSON.stringify({ status: "completed" }) },
+  );
+  check("a status change on an unknown appointment is refused",
+    missingAppt.status >= 400, `HTTP ${missingAppt.status}`);
+
+  const bogusStatus = await fetch(`${API}/appointments`, {
+    method: "POST", headers: patientAuth, body: JSON.stringify({ doctorId: doctorIdForSlots }),
+  });
+  check("booking without a slot is rejected by validation", bogusStatus.status === 422,
+    `HTTP ${bogusStatus.status}`);
+
+  /* ---- date presentation ---- */
+  const dateInput = page.locator("#schedule-date");
+  check("the schedule card offers a date picker", (await dateInput.count()) === 1);
+  if ((await dateInput.count()) === 1) {
+    check("the schedule opens on today",
+      (await dateInput.inputValue()) === todayISO_, await dateInput.inputValue());
+    const listed = (await page.locator("main").innerText()).replace(/\s+/g, " ");
+    check("the schedule states the day and its slot counts",
+      /Today|open ·|booked/.test(listed), listed.slice(0, 120));
+  }
+
+  /* ---- the offered actions must be exactly the server's ---------------
+   * The dashboard decides what to OFFER from its own copy of the transition
+   * table; the server validates regardless. A silent divergence would either
+   * hide a transition the API accepts or offer one it refuses, so the two
+   * tables are compared rather than trusted.
+   */
+  const repoRoot = new URL("../server/src/services/bookingService.js", import.meta.url);
+  const [serverSrc, clientSrc] = await Promise.all([
+    readFile(repoRoot, "utf8").catch(() => ""),
+    readFile(
+      new URL("../client/src/pages/ProviderDashboard.jsx", import.meta.url),
+      "utf8",
+    ).catch(() => ""),
+  ]);
+  // Slice the object by matching braces. Cutting at the next "};" picked up the
+  // TRANSITION_ROLES table that follows, which has different keys and values.
+  const tableFrom = (src, marker) => {
+    const at = src.indexOf(marker);
+    if (at < 0) return null;
+    let depth = 0;
+    let end = at;
+    for (; end < src.length; end += 1) {
+      if (src[end] === "{") depth += 1;
+      else if (src[end] === "}") {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+    }
+    const out = {};
+    // Keys are only quoted when they contain a hyphen ("in-progress"), so the
+    // quotes must be optional or the unquoted statuses are silently skipped and
+    // the comparison covers almost nothing.
+    for (const m of src.slice(at, end).matchAll(/["']?([a-z-]+)["']?:\s*\[([^\]]*)\]/g)) {
+      out[m[1]] = m[2].split(",").map((x) => x.trim().replace(/^"|"$/g, "")).filter(Boolean).sort();
+    }
+    return out;
+  };
+  const serverTable = tableFrom(serverSrc, "ALLOWED_TRANSITIONS = Object.freeze({");
+  const clientTable = tableFrom(clientSrc, "const STATUS_ACTIONS = {");
+  check("the client's action table was found", clientTable !== null);
+  check("the server's transition table was found", serverTable !== null);
+  check("the dashboard offers exactly the transitions the server allows",
+    JSON.stringify(clientTable) === JSON.stringify(serverTable),
+    `server=${JSON.stringify(serverTable)} client=${JSON.stringify(clientTable)}`);
+  check("a terminal status offers no action at all",
+    ["completed", "cancelled", "no-show"].every((s) => (clientTable?.[s] ?? []).length === 0),
+    JSON.stringify(["completed", "cancelled", "no-show"].map((s) => clientTable?.[s])));
+  // Reading a queue state is required (the checked-in count uses it). What must
+  // not appear is a WRITE: the API has no queue-state endpoint, so any call the
+  // dashboard makes beyond the read would be inventing one.
+  const queueCalls = [...clientSrc.matchAll(/api\.(\w*queue\w*)\(/gi)].map((m) => m[1]);
+  check("the dashboard only ever READS the queue, never writes a queue state",
+    queueCalls.length > 0 && queueCalls.every((c) => /^queue$/i.test(c)),
+    `api calls: ${JSON.stringify(queueCalls)}`);
+
+  /* ------------------------------------------------------------------ *
+   *  Checkpoint 3 — the doctor queue
+   * ------------------------------------------------------------------ */
+
+  const queueAuth = { "Content-Type": "application/json", Authorization: `Bearer ${session.token}` };
+  const CLINIC_TZ = "Asia/Kolkata";
+  const clinicToday = new Intl.DateTimeFormat("en-CA", { timeZone: CLINIC_TZ }).format(new Date());
+  const clinicNowMin = (() => {
+    const p = new Intl.DateTimeFormat("en-CA", {
+      timeZone: CLINIC_TZ, hour: "2-digit", minute: "2-digit", hour12: false,
+    }).formatToParts(new Date());
+    const get = (t) => Number(p.find((x) => x.type === t)?.value ?? 0);
+    return ((get("hour") % 24) * 60) + get("minute");
+  })();
+  const toMin = (t) => { const [h, m] = String(t).split(":").map(Number); return h * 60 + m; };
+  const hhmm = (m) =>
+    `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+
+  const otherDoctorSession = await loginViaApi({ email: "doctor2@demo.com", password: "doctor123" });
+  const otherDoctorId = (await (
+    await fetch(`${API}/auth/me`, { headers: { Authorization: `Bearer ${otherDoctorSession.token}` } })
+  ).json())?.data?.user?.doctor?.id;
+  check("a second doctor account is available", Boolean(otherDoctorId));
+
+  /* ---- queue authorization, at the API boundary ---- */
+
+  const anonQueue = await fetch(`${API}/appointments/queue?doctorId=${schedule.data.doctor.id}`);
+  check("an anonymous caller cannot read a queue", anonQueue.status === 401,
+    `HTTP ${anonQueue.status}`);
+
+  const noDoctor = await fetch(`${API}/appointments/queue`, { headers: queueAuth });
+  check("the queue refuses a request with no doctorId", noDoctor.status === 400,
+    `HTTP ${noDoctor.status}`);
+
+  const patientQueue = (await (
+    await fetch(`${API}/appointments/queue?doctorId=${schedule.data.doctor.id}&date=${clinicToday}`,
+      { headers: { Authorization: `Bearer ${patientSession.token}` } })
+  ).json())?.data;
+  check("a patient never receives another patient's queue row",
+    (patientQueue?.entries ?? []).length <= 1 &&
+      (patientQueue?.entries ?? []).every((e) => !e.patientName || e.patientName !== undefined) &&
+      (patientQueue?.entries ?? []).every((e) => e.state !== undefined),
+    `entries=${(patientQueue?.entries ?? []).length}`);
+  check("a patient cannot see the waiting total's row count",
+    typeof patientQueue?.total === "number", JSON.stringify(patientQueue ?? {}).slice(0, 80));
+
+  if (otherDoctorId) {
+    const crossQueue = (await (
+      await fetch(`${API}/appointments/queue?doctorId=${otherDoctorId}&date=${clinicToday}`,
+        { headers: queueAuth })
+    ).json())?.data;
+    check("a doctor asking for another doctor's queue is scoped to themselves",
+      (crossQueue?.entries ?? []).length <= 1,
+      `entries=${(crossQueue?.entries ?? []).length}`);
+  }
+  /* ---- a queue with patients in it ----
+   * Check-in needs a slot that has already started, which the seed does not
+   * guarantee at every hour, so the fixture opens one when it has to. TWO
+   * patients are checked in because the server orders a queue by appointment
+   * time, and an ordering assertion over a single row proves nothing.
+   *
+   * Both appointments are cancelled at the end, which returns the slots to
+   * `available` so a later run reuses them instead of adding more.
+   */
+  const queuePatients = [];
+  const bookingAttempts = [];
+  try {
+    const todaysSlots = (await (
+      await fetch(`${API}/doctors/${schedule.data.doctor.id}/slots?date=${clinicToday}`)
+    ).json())?.data?.slots ?? [];
+
+    // Every free 30-minute window that has already begun, soonest first.
+    const busy = todaysSlots.map((s) => [toMin(s.startTime), toMin(s.endTime)]);
+    const freeStarts = [];
+    for (let m = 0; m + 30 <= clinicNowMin - 5; m += 5) {
+      if (!busy.some(([f, t]) => m < t && f < m + 30)) freeStarts.push(m);
+    }
+    // Reuse slots that are already open and already started. Cancelling the
+    // fixture appointments returns their slots to `available`, so repeated runs
+    // settle here instead of consuming a fresh window every time.
+    const slots = todaysSlots
+      .filter((s) => s.status === "available" && toMin(s.startTime) + 30 <= clinicNowMin)
+      .sort((a, b) => toMin(a.startTime) - toMin(b.startTime))
+      .slice(0, 2);
+
+    // Only open more when there are not enough, because the morning runs out.
+    for (const start of freeStarts) {
+      if (slots.length >= 2) break;
+      const existing = todaysSlots.find((s) => toMin(s.startTime) === start);
+      if (existing) continue;
+      const made = (await (
+        await fetch(`${API}/doctors/${schedule.data.doctor.id}/slots`, {
+          method: "POST",
+          headers: queueAuth,
+          body: JSON.stringify({
+            date: clinicToday, times: [hhmm(start)], duration: 30,
+            mode: "in-person", fee: 500, maxQueue: 3,
+          }),
+        })
+      ).json())?.data?.created?.[0];
+      if (made) slots.push({ ...made, status: "available", startTime: hhmm(start) });
+    }
+    check("the queue fixture has two started slots to check in to",
+      slots.length === 2,
+      `reused=${slots.map((s) => s.startTime).join(",") || "none"} free windows=${freeStarts.length}`);
+
+    const creds = [
+      { email: "ishita@demo.com", password: "patient123" },
+      { email: "aman@demo.com", password: "patient123" },
+      { email: "patient@demo.com", password: "patient123" },
+    ];
+    for (const slot of slots) {
+      for (const cred of creds) {
+        if (queuePatients.some((q) => q.email === cred.email)) continue;
+        const s = await loginViaApi(cred);
+        const bookedRes = await fetch(`${API}/appointments`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${s.token}` },
+          body: JSON.stringify({ doctorId: schedule.data.doctor.id, slotId: slot.id }),
+        });
+        const booked = await bookedRes.json().catch(() => null);
+        if (bookedRes.status !== 201 || !booked?.data?.appointment?.id) continue;
+        const id = booked.data.appointment.id;
+        const joined = await fetch(`${API}/appointments/${id}/check-in`, {
+          method: "POST", headers: { Authorization: `Bearer ${s.token}` },
+        });
+        bookingAttempts.push(`${cred.email}@${slot.startTime} check-in=${joined.status}`);
+        if (joined.status === 200) {
+          queuePatients.push({ ...cred, session: s, id, slotId: slot.id, startTime: slot.startTime });
+          break;
+        }
+      }
+    }
+    check("two patients checked in, so the queue order is meaningful",
+      queuePatients.length === 2,
+      `${queuePatients.length} checked in; ${bookingAttempts.join(" | ") || "none"}`);
+
+    const queueAppointmentId = queuePatients[0]?.id ?? null;
+
+    /* ---- what the queue card renders ---- */
+    const apiQueue = (await (
+      await fetch(`${API}/appointments/queue?doctorId=${schedule.data.doctor.id}&date=${clinicToday}`,
+        { headers: queueAuth })
+    ).json())?.data;
+    const apiAppts = (await (
+      await fetch(`${API}/doctors/me/schedule`, { headers: queueAuth })
+    ).json())?.data?.appointments ?? [];
+    const timeOf = new Map(apiAppts.map((a) => [a.id, a.startTime]));
+
+    check("the queue reports the checked-in patient",
+      (apiQueue?.entries ?? []).some((e) => e.appointmentId === queueAppointmentId),
+      `entries=${(apiQueue?.entries ?? []).length}`);
+    check("every position is the value the server sent, as an integer",
+      (apiQueue?.entries ?? []).every((e) => Number.isInteger(e.position) && e.position >= 1),
+      JSON.stringify((apiQueue?.entries ?? []).map((e) => e.position)));
+    check("the queue order is the server's, by appointment time",
+      JSON.stringify((apiQueue?.entries ?? []).map((e) => toMin(timeOf.get(e.appointmentId))))
+        === JSON.stringify((apiQueue?.entries ?? []).map((e) => toMin(timeOf.get(e.appointmentId)))
+          .slice().sort((a, b) => a - b)),
+      (apiQueue?.entries ?? []).map((e) => timeOf.get(e.appointmentId)).join(","));
+    check("the reported waiting total matches the waiting rows",
+      apiQueue?.waiting === (apiQueue?.entries ?? []).filter((e) => e.state === "waiting").length,
+      `waiting=${apiQueue?.waiting}`);
+    check("the average wait is a server figure, not a client estimate",
+      apiQueue?.averageWaitMinutes ===
+        (apiQueue?.entries ?? []).filter((e) => e.state === "waiting").length * 15,
+      `averageWaitMinutes=${apiQueue?.averageWaitMinutes}`);
+
+    await page.reload({ waitUntil: "networkidle" });
+    await page.getByRole("heading", { name: "Queue", exact: true }).waitFor({ timeout: 15000 });
+    const queueCard = page.locator("section", { has: page.getByRole("heading", { name: "Queue", exact: true }) }).first();
+    const queueText = (await queueCard.innerText()).replace(/\s+/g, " ");
+
+    const mine = (apiQueue?.entries ?? []).find((e) => e.appointmentId === queueAppointmentId);
+    check("the queue card shows the checked-in patient",
+      queueText.includes(mine?.patientName ?? "@@none@@"), queueText.slice(0, 140));
+    check("the queue card shows the server position",
+      queueText.includes(`#${mine?.position}`), `#${mine?.position}`);
+    check("the queue card shows the queue state",
+      /waiting|in consultation|completed/i.test(queueText), queueText.slice(0, 140));
+    check("the queue card reports the waiting total",
+      queueText.includes(`${apiQueue?.waiting} waiting`), `${apiQueue?.waiting} waiting`);
+    // Names are distinctive and unambiguous, so the card must mention them in
+    // exactly the order the server sent. Comparing clock text instead would
+    // compare "1:30 AM" against the raw "01:30" and fail on formatting.
+    const serverNames = (apiQueue?.entries ?? []).map((e) => e.patientName).filter(Boolean);
+    const shownNames = serverNames.length
+      ? (queueText.match(new RegExp(serverNames.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g")) ?? [])
+      : [];
+    check("the queue card lists patients in the server's order",
+      serverNames.length > 0 &&
+        JSON.stringify(shownNames) === JSON.stringify(serverNames),
+      `server=${serverNames.join(",")} shown=${shownNames.join(",")}`);
+    check("the queue card shows each entry's appointment time",
+      (apiQueue?.entries ?? []).every((e) => {
+        const raw = timeOf.get(e.appointmentId);
+        if (!raw) return true;
+        const [h, m] = raw.split(":").map(Number);
+        const hour12 = h % 12 === 0 ? 12 : h % 12;
+        return queueText.includes(`${hour12}:${String(m).padStart(2, "0")}`);
+      }),
+      queueText.slice(0, 160));
+
+    /* ---- loading, failure and retry ---- */
+    let held = 0;
+    await page.route("**/api/appointments/queue*", async (route) => {
+      held += 1;
+      await new Promise((r) => setTimeout(r, 1200));
+      await route.continue();
+    });
+    await queueCard.getByRole("button", { name: "Refresh" }).click();
+    await page.waitForTimeout(400);
+    check("a queue refresh reports that it is in flight",
+      /Refreshing/.test(await queueCard.innerText()), "no in-flight label");
+    await page.waitForTimeout(1400);
+    await page.unroute("**/api/appointments/queue*");
+    check("the refresh completed", held >= 1, `requests=${held}`);
+
+    await page.route("**/api/appointments/queue*", (route) =>
+      route.fulfill({ status: 500, contentType: "application/json",
+        body: JSON.stringify({ success: false, message: "queue unavailable" }) }));
+    await queueCard.getByRole("button", { name: "Refresh" }).click();
+    await page.waitForTimeout(900);
+    const failed = (await queueCard.innerText()).replace(/\s+/g, " ");
+    check("a failing queue shows an error and offers a retry",
+      /Retry/.test(failed) && !/checked in/.test(failed), failed.slice(0, 120));
+    await page.unroute("**/api/appointments/queue*");
+    await queueCard.getByRole("button", { name: "Retry" }).click();
+    await page.waitForTimeout(1200);
+    const recovered = (await queueCard.innerText()).replace(/\s+/g, " ");
+    check("retry recovers the queue from a failure",
+      recovered.includes(mine?.patientName ?? "@@none@@"), recovered.slice(0, 120));
+
+    /* ---- consultation actions ---- */
+    const invalid = await fetch(`${API}/appointments/${queueAppointmentId}/status`, {
+      method: "PATCH", headers: queueAuth, body: JSON.stringify({ status: "confirmed" }),
+    });
+    check("an invalid transition out of in-progress is refused",
+      invalid.status >= 400, `HTTP ${invalid.status}`);
+
+    // Scoped to the row for THIS patient's appointment: the queue can hold more
+    // than one visit, and completing somebody else's would leave this assertion
+    // passing for the wrong reason.
+    // A completed visit stays in the queue for the rest of the day, and its slot
+    // becomes bookable again, so the same patient and the same time can both
+    // appear twice. The live row is therefore the one that still OFFERS an
+    // action: terminal statuses render none.
+    // Every row for this patient, including any left over from an earlier run:
+    // a completed visit keeps its queue entry for the rest of the day. Exactly
+    // one of them may still offer an action, because a terminal status renders
+    // none - which is itself the assertion.
+    const patientRows = queueCard.locator("li")
+      .filter({ hasText: mine?.patientName ?? "@@no-such-patient@@" });
+    const completeButtons = patientRows.getByRole("button", { name: /^Completed$/ });
+    const liveRows = await completeButtons.count();
+    check("only the live visit offers a Complete action; completed ones offer none",
+      liveRows === 1,
+      `rows for this patient=${await patientRows.count()} offering Complete=${liveRows}`);
+    const completeBtn = completeButtons.first();
+    if (liveRows > 0) {
+      let sends = 0;
+      await page.route("**/api/appointments/*/status", async (route) => {
+        sends += 1;
+        await new Promise((r) => setTimeout(r, 900));
+        await route.continue();
+      });
+      await completeBtn.click({ force: true }).catch(() => {});
+      await completeBtn.click({ force: true }).catch(() => {});
+      await completeBtn.click({ force: true }).catch(() => {});
+      await page.waitForTimeout(2200);
+      await page.unroute("**/api/appointments/*/status");
+      check("repeated clicks on the queue's Complete send one request", sends === 1,
+        `requests=${sends}`);
+
+      await page.waitForTimeout(600);
+      const afterQueue = (await (
+        await fetch(`${API}/appointments/queue?doctorId=${schedule.data.doctor.id}&date=${clinicToday}`,
+          { headers: queueAuth })
+      ).json())?.data;
+      const afterAppt = (await (
+        await fetch(`${API}/appointments/${queueAppointmentId}`, { headers: queueAuth })
+      ).json())?.data?.appointment;
+      check("completing the visit changed the appointment, not a queue state",
+        afterAppt?.status === "completed",
+        `appointment=${afterAppt?.status}`);
+      check("the queue row survives the completion",
+        (afterQueue?.entries ?? []).some((e) => e.appointmentId === queueAppointmentId),
+        `entries=${(afterQueue?.entries ?? []).length}`);
+      const refreshedText = (await queueCard.innerText()).replace(/\s+/g, " ");
+      check("the queue card refreshed to show the completed visit",
+        /completed/i.test(refreshedText), refreshedText.slice(0, 140));
+    } else {
+      const diag = (await (
+        await fetch(`${API}/appointments/${queueAppointmentId}`, { headers: queueAuth })
+      ).json())?.data?.appointment;
+      check("the queue row offered a Complete action", false,
+        `no Complete button; appointment status=${diag?.status} ` +
+        `rows=${await queueCard.locator("li").count()} ` +
+        `rows for patient=${await patientRows.count()}`);
+    }
+  } finally {
+    // Release every slot this block took, so the next run - and the next suite -
+    // sees the calendar the way it was found. Cancelling returns the slot to
+    // `available`, which is what lets the next run reuse the same one.
+    for (const q of queuePatients) {
+      await fetch(`${API}/appointments/${q.id}/cancel`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${q.session.token}`,
+        },
+        body: JSON.stringify({ reason: "hook-checks queue cleanup" }),
+      });
+    }
+  }
+
+  /* ---- duplicate submission is refused while a transition is in flight ---- */
+  // An action only exists on a row whose status can still change, which depends
+  // on what the seed left behind. The tabs are tried in turn so the guard is
+  // exercised against a real row rather than skipped.
+  const ACTION = /^(Confirm|In progress|Complete|No show|Cancel)$/i;
+  let actionButton = null;
+  let actionLabel = null;
+  for (const label of ["Today", "Upcoming", "History"]) {
+    // Tabs render `<button>Today <span class="badge">3</span></button>`, so the
+    // accessible name carries the count and an exact match never resolves.
+    const tabButton = page.locator(".tabs .tab").filter({ hasText: label }).first();
+    if (await tabButton.count()) await tabButton.click().catch(() => {});
+    await page.waitForTimeout(300);
+    const candidate = page.locator("main button").filter({ hasText: ACTION }).first();
+    if (await candidate.count()) {
+      actionButton = candidate;
+      actionLabel = (await candidate.innerText()).trim();
+      break;
+    }
+  }
+
+  if (actionButton) {
+    // A toast is a FIXED overlay with a high z-index. A click aimed at a button
+    // underneath one lands on the toast, which is indistinguishable from "the
+    // guard swallowed it" unless the toast stack is empty first.
+    for (let i = 0; i < 40; i += 1) {
+      if ((await page.locator(".toast-wrap > *").count()) === 0) break;
+      await page.waitForTimeout(150);
+    }
+    // An action earlier in this run may still be in flight, and a disabled
+    // button swallows the click entirely - which would look like "no request"
+    // rather than "the guard worked". Wait for the row to settle first.
+    await actionButton.waitFor({ state: "visible", timeout: 5000 }).catch(() => {});
+    for (let i = 0; i < 24; i += 1) {
+      if (await actionButton.isEnabled().catch(() => false)) break;
+      await page.waitForTimeout(250);
+    }
+    check("the action under test is enabled before it is clicked",
+      await actionButton.isEnabled().catch(() => false),
+      `button="${actionLabel}"`);
+
+    let statusCalls = 0;
+    await page.route("**/api/appointments/*/status", async (route) => {
+      statusCalls += 1;
+      await new Promise((r) => setTimeout(r, 800));
+      await route.continue();
+    });
+    // Rapid repeated clicks on one action must not send duplicate requests.
+    await actionButton.click({ force: true }).catch(() => {});
+    await actionButton.click({ force: true }).catch(() => {});
+    await actionButton.click({ force: true }).catch(() => {});
+    await page.waitForTimeout(2200);
+    await page.unroute("**/api/appointments/*/status");
+    check(`rapid repeated clicks on "${actionLabel}" send one request`,
+      statusCalls === 1, `requests=${statusCalls}`);
+  } else {
+    check("a status action was available to exercise", false,
+      "no actionable appointment on any tab");
+  }
+
+  await context.close();
+}
+
 /* ------------------------------------------------------------------ *
  *  Report                                                              *
  * ------------------------------------------------------------------ */
@@ -1553,6 +2304,7 @@ const run = async () => {
     await runRescheduleChecks(browser);
     await runLazyRouteChecks(browser);
     await runErrorBoundaryChecks(browser);
+    await runProviderChecks(browser);
   } finally {
     await browser.close();
   }

@@ -529,7 +529,11 @@ const buildFixtures = async () => {
     // constraint and make the result depend on the seeded data rather than on the
     // rule under test.
     const checkinHash = raceHash;
-    for (let i = 0; i < 3; i += 1) {
+    // Five, not three: 0 and 1 take the patient-overlap fixture, 2 takes the
+    // re-pricing fixture, and 3 and 4 take the queue/capacity fixtures. Each
+    // section needs patients the others have not booked, because every fixture
+    // is placed at a controlled instant around "now".
+    for (let i = 0; i < 5; i += 1) {
       const email = `checkin${String(i + 1).padStart(2, "0")}-${RUN_ID}@phase6.test`;
       await db.query(
         `INSERT INTO users (email, password_hash, role, full_name, phone)
@@ -1265,13 +1269,19 @@ const queueChecks = async () => {
   // those slots as a demo patient could be refused with PATIENT_CLASH whenever
   // a seeded visit happens to overlap - which made the result depend on the
   // seed and the clock rather than on the queue rule under test.
+  // These must be patients NOBODY has booked yet. Patients 0 and 1 already hold
+  // the 13:00 overlap fixture above, and the capacity slot is placed at
+  // `now - 1h`, so between roughly 14:00 and 15:00 the two windows overlapped
+  // and the booking was refused with PATIENT_CLASH - a collision between two
+  // fixtures, not the rule under test. Patients 3 and 4 exist for this section
+  // alone and are used nowhere else.
   fx.checkinTokens = [];
-  for (const email of (fx.checkinEmails ?? []).slice(0, 3)) {
+  for (const email of (fx.checkinEmails ?? []).slice(0, 5)) {
     const r = await call("/auth/login", { method: "POST", body: { email, password: "race123" } });
     fx.checkinTokens.push(r.data?.token ?? null);
   }
-  const qFirst = fx.checkinTokens[0];
-  const qSecond = fx.checkinTokens[1];
+  const qFirst = fx.checkinTokens[3];
+  const qSecond = fx.checkinTokens[4];
   check("appointment-free fixture patients are available for the queue checks",
     Boolean(qFirst && qSecond));
 

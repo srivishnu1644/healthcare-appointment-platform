@@ -782,6 +782,117 @@ const run = async () => {
   check("the list resolves positions once for the whole page",
     (listHandler.match(/positionsForAppointments/g) || []).length === 1);
   check("the list still reports the scoped count", /count:\s*list\.length/.test(listHandler));
+
+  /* ------------------------------------------------------------------ *
+   * 4. the live queue: ordering, payload and who may read it            *
+   * ------------------------------------------------------------------ */
+  // `GET /appointments/queue` is read-only and separate from the list
+  // projection above. It is what the doctor queue screen reads, so its
+  // ordering, its payload and its scoping are asserted here.
+  const qDoctorSession = await signIn(DOCTOR);
+  const qDoctorId = (await call("/auth/me", { token: qDoctorSession.token })).data?.user
+    ?.doctor?.id;
+  const qOtherSession = await signIn(OTHER_DOCTOR);
+  const qOtherDoctorId = (await call("/auth/me", { token: qOtherSession.token })).data?.user
+    ?.doctor?.id;
+  const qAdminSession = await signIn(ADMIN);
+  check("the provider's own schedule resolves a doctor id", Boolean(qDoctorId));
+
+  const noDoctorId = await call("/appointments/queue", { token: qDoctorSession.token });
+  check("the queue refuses a request with no doctorId",
+    noDoctorId.status === 400 && codeOf(noDoctorId) === "MISSING_DOCTOR",
+    `status=${noDoctorId.status} code=${codeOf(noDoctorId)}`);
+
+  const anonQueue = await call(`/appointments/queue?doctorId=${qDoctorId}`);
+  check("an unauthenticated caller cannot read a waiting list",
+    anonQueue.status === 401, `status=${anonQueue.status}`);
+
+  const qToday = new Intl.DateTimeFormat("en-CA", {
+    timeZone: process.env.APP_TIMEZONE || "Asia/Kolkata",
+  }).format(new Date());
+
+  const qOwn = (await call(`/appointments/queue?doctorId=${qDoctorId}&date=${qToday}`, {
+    token: qDoctorSession.token,
+  })).data;
+  check("a doctor reads their own queue", Array.isArray(qOwn?.entries));
+  check("the queue reports a total, a waiting count and an average wait",
+    Number.isInteger(qOwn?.total) && Number.isInteger(qOwn?.waiting) &&
+      Number.isInteger(qOwn?.averageWaitMinutes),
+    JSON.stringify({ total: qOwn?.total, waiting: qOwn?.waiting, avg: qOwn?.averageWaitMinutes }));
+  check("the waiting count matches the waiting rows",
+    qOwn?.waiting === (qOwn?.entries ?? []).filter((e) => e.state === "waiting").length,
+    `waiting=${qOwn?.waiting}`);
+  check("every position is a positive integer as the server sent it",
+    (qOwn?.entries ?? []).every((e) => Number.isInteger(e.position) && e.position >= 1),
+    JSON.stringify((qOwn?.entries ?? []).map((e) => e.position)));
+  check("every entry names its patient and carries the queue state",
+    (qOwn?.entries ?? []).every(
+      (e) => typeof e.patientName === "string" && typeof e.state === "string",
+    ));
+
+  // A patient asking for a doctor's waiting list must get their own row only,
+  // never the room. The scoped payload omits other patients' names, so this
+  // holds however full the room happens to be.
+  const qPatientSession = await signIn({ email: "patient@demo.com", password: SEED_PASSWORD });
+  const qAsPatient = (await call(`/appointments/queue?doctorId=${qDoctorId}&date=${qToday}`, {
+    token: qPatientSession.token,
+  })).data;
+  check("a patient is shown at most their own row, never the room",
+    (qAsPatient?.entries ?? []).length <= 1,
+    `entries=${(qAsPatient?.entries ?? []).length} room=${qOwn?.total}`);
+  check("a patient cannot read another patient's name from the queue",
+    (qAsPatient?.entries ?? []).every(
+      (e) => e.patientName === undefined ||
+        qOwn?.entries.some((o) => o.patientName === e.patientName),
+    ),
+    JSON.stringify((qAsPatient?.entries ?? []).map((e) => e.patientName)));
+
+  // Cross-doctor: the request SUCCEEDS but is scoped to the caller's own row, so
+  // the other doctor's room is not disclosed. Asserting a 403 here would be
+  // asserting behaviour this API deliberately does not have.
+  if (qOtherDoctorId) {
+    const qCross = (await call(`/appointments/queue?doctorId=${qOtherDoctorId}&date=${qToday}`, {
+      token: qDoctorSession.token,
+    })).data;
+    const qCrossNames = (qCross?.entries ?? []).map((e) => e.patientName);
+    const qOtherRoom = (await call(`/appointments/queue?doctorId=${qOtherDoctorId}&date=${qToday}`, {
+      token: qOtherSession.token,
+    })).data;
+    check("a doctor asking for another doctor's queue is scoped to themselves",
+      (qCross?.entries ?? []).length <= 1,
+      `entries=${(qCross?.entries ?? []).length}`);
+    check("a doctor cannot see the other doctor's waiting list",
+      (qOtherRoom?.entries ?? []).every((e) => qCrossNames.includes(e.patientName)),
+      `cross=${JSON.stringify(qCrossNames)} otherRoom=${(qOtherRoom?.entries ?? []).length}`);
+  }
+
+  const qAsAdmin = (await call(`/appointments/queue?doctorId=${qDoctorId}&date=${qToday}`, {
+    token: qAdminSession.token,
+  })).data;
+  check("an admin reads the full queue and it matches the doctor's own view",
+    qAsAdmin?.entries?.length === qOwn?.entries?.length,
+    `admin=${qAsAdmin?.entries?.length} doctor=${qOwn?.entries?.length}`);
+
+  // Ordering is the server's: slot start time, then position.
+  const qSched = (await call("/doctors/me/schedule", { token: qDoctorSession.token })).data;
+  const qStarts = new Map(
+    (qSched?.appointments ?? []).map((a) => [a.id, new Date(a.startsAt).getTime()]),
+  );
+  const qApptIds = new Set((qSched?.appointments ?? []).map((a) => a.id));
+  const qOrdered = (qOwn?.entries ?? []).map((e) => qStarts.get(e.appointmentId) ?? 0);
+  check("the queue comes back ordered by appointment start time",
+    JSON.stringify(qOrdered) === JSON.stringify(qOrdered.slice().sort((a, b) => a - b)),
+    JSON.stringify(qOrdered));
+  check("every queued entry belongs to an appointment on this doctor's list",
+    (qOwn?.entries ?? []).every((e) => qApptIds.has(e.appointmentId)));
+
+  // The queue payload carries no appointment time: listForDoctor selects
+  // start_time but toEntry drops it, so a client cannot show one from here.
+  // Recorded so the gap stays visible instead of being quietly worked around.
+  check("the queue payload carries no appointment time (the client joins it)",
+    (qOwn?.entries ?? []).every((e) => e.startTime === undefined && e.endsAt === undefined),
+    JSON.stringify(Object.keys(qOwn?.entries?.[0] ?? {})));
+
 };
 
 try {

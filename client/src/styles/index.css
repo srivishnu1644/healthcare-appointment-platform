@@ -257,6 +257,9 @@ a:hover {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* Wraps so a heading and its controls stack on a narrow viewport instead of
+     pushing the card wider than the screen. `.row-between` already does this. */
+  flex-wrap: wrap;
   gap: 0.75rem;
   flex-wrap: wrap;
 }
@@ -873,6 +876,13 @@ a:hover {
   .sticky-side {
     position: static;
   }
+  /* Between 600px and 900px the full nav, the bell and the account controls do
+     not fit beside the brand, and the header spilled past the viewport. They
+     collapse here and the drawer takes over, which is what `hide-sm` always
+     meant; leaving it at 600px was the inconsistency. */
+  .hide-sm {
+    display: none !important;
+  }
 }
 
 @media (max-width: 600px) {
@@ -883,9 +893,6 @@ a:hover {
   .grid-3,
   .grid-4 {
     grid-template-columns: 1fr;
-  }
-  .hide-sm {
-    display: none !important;
   }
   .container {
     padding: 0 1rem;

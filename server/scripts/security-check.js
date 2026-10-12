@@ -412,18 +412,15 @@ const run = async () => {
 
   // Two different slots are needed.
   //
-  // `free` is for booking, so the latest available slot will do. `todaySlot` is
-  // for check-in, which Phase 6 restricts to the day of the appointment: the
-  // client only ever renders the check-in button when `date === today`, so a
-  // future-date check-in is refused by the API and asserting it as 200 would be
-  // asserting the old, incorrect behaviour.
+  // `free` is for booking, so the latest available slot will do. The check-in
+  // case builds its own slot below: Phase 6 restricts check-in to the day of the
+  // appointment, and borrowing a leftover seeded slot made that depend on what
+  // earlier suites had already consumed.
   const free = bookable.sort((a, b) =>
     a.date === b.date
       ? b.startTime.localeCompare(a.startTime)
       : b.date.localeCompare(a.date),
   )[0];
-
-  const todaySlot = bookable.find((s) => s.date === today);
 
   if (free) {
     const booking = await call("/appointments", {
@@ -446,21 +443,109 @@ const run = async () => {
       });
       check("double booking still rejected", doubleBook.status >= 400);
 
-      // Check-in is only valid on the day of the appointment. Booking a second
-      // slot dated today makes this deterministic even when the suite runs late
-      // in the day and every remaining seeded slot is in the past.
+      // Check-in is restricted to the day of the appointment and enforced as an
+      // INSTANT comparison (`starts_at <= now()`), while booking is a DATE
+      // comparison: the clinic's current day stays bookable until 23:59
+      // (bookingService.assertBookableDate). A slot earlier today that has
+      // already begun is therefore exactly the scenario, and it can be built at
+      // any hour of the day rather than only while a future slot remains.
+      //
+      // The slot is created through the provider's own slot API rather than
+      // borrowed from the seed. Earlier suites consume seeded slots and the demo
+      // patient accumulates appointments of its own, so a leftover-slot fixture
+      // only works on a virgin database and fails for reasons unrelated to the
+      // rule under test.
+      //
+      // Exactly ONE slot is created, and later runs reuse it: the same window is
+      // requested again, the API declines to duplicate it, and the slot already
+      // on the calendar is booked instead. The appointment is cancelled at the
+      // end so this suite leaves no clash behind for the suites that follow.
+      const meDoctorId = me.body?.data?.user?.doctor?.id;
+      let checkInSlot = null;
       let checkInApptId = null;
-      if (todaySlot && todaySlot.id !== free.id) {
+
+      if (meDoctorId) {
+        const nowMin = (() => {
+          const parts = new Intl.DateTimeFormat("en-CA", {
+            timeZone: process.env.APP_TIMEZONE || "Asia/Kolkata",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          }).formatToParts(new Date());
+          const get = (t) => Number(parts.find((p) => p.type === t)?.value ?? 0);
+          return (get("hour") % 24) * 60 + get("minute");
+        })();
+        const toMin = (t) => {
+          const [h, m] = String(t).split(":").map(Number);
+          return h * 60 + m;
+        };
+        const hhmm = (m) =>
+          `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+
+        // Asked for by date explicitly: the unqualified slots listing omits the
+        // part of the day that has already passed, and this fixture deliberately
+        // looks for a window that HAS passed.
+        const todaysSlots = (
+          await call(`/doctors/${meDoctorId}/slots?date=${today}`, {
+            token: patientToken,
+          })
+        ).body?.data?.slots ?? [];
+        // Prefer a slot an earlier run of this suite already left behind. It
+        // goes back to `available` when the appointment is cancelled at the end,
+        // so repeated runs settle on one slot instead of adding one each time.
+        const reusable = todaysSlots.find(
+          (s) => s.status === "available" && toMin(s.startTime) + 30 <= nowMin,
+        );
+        if (reusable) {
+          checkInSlot = reusable;
+        } else {
+          // Otherwise take the earliest free 30-minute window that has begun.
+          const busy = todaysSlots.map((s) => [toMin(s.startTime), toMin(s.endTime)]);
+          let start = null;
+          for (let m = 0; m + 30 <= nowMin - 5; m += 5) {
+            if (!busy.some(([f, t]) => m < t && f < m + 30)) {
+              start = m;
+              break;
+            }
+          }
+          if (start !== null) {
+            const made = (
+              await call(`/doctors/${meDoctorId}/slots`, {
+                method: "POST",
+                token: doctorToken,
+                body: {
+                  date: today,
+                  times: [hhmm(start)],
+                  duration: 30,
+                  mode: "in-person",
+                  fee: 500,
+                  maxQueue: 3,
+                },
+              })
+            ).body?.data?.created?.[0];
+            // `created` echoes the candidate plus its new id and carries no
+            // status column, and a slot that was just inserted is available by
+            // definition.
+            checkInSlot = made ? { ...made, status: "available" } : null;
+          }
+        }
+      }
+
+      if (checkInSlot?.status === "available") {
         const todayBooking = await call("/appointments", {
           method: "POST",
           token: patientToken,
-          body: { doctorId, slotId: todaySlot.id },
+          body: { doctorId: meDoctorId, slotId: checkInSlot.id },
         });
+        check(
+          "a slot dated today that has already started can still be booked (booking is date-based)",
+          todayBooking.status === 201,
+          `HTTP ${todayBooking.status}`,
+        );
         if (todayBooking.status === 201) {
           checkInApptId = todayBooking.body?.data?.appointment?.id;
         }
       }
-      checkInApptId = checkInApptId ?? (free.date === today ? apptId : null);
 
       if (checkInApptId) {
         const checkIn = await call(`/appointments/${checkInApptId}/check-in`, {
@@ -476,8 +561,20 @@ const run = async () => {
         check(
           "owner can still check in on the day of the appointment",
           false,
-          "no free slot dated today was available to check in to",
+          checkInSlot
+            ? `the ${checkInSlot.startTime} slot is ${checkInSlot.status}, not available`
+            : "no free started window dated today could be found on this calendar",
         );
+      }
+
+      // Release the slot so the next suite - and the next run of this one - sees
+      // the calendar the way it found it.
+      if (checkInApptId) {
+        await call(`/appointments/${checkInApptId}/cancel`, {
+          method: "PATCH",
+          token: patientToken,
+          body: { reason: "security-check cleanup" },
+        });
       }
 
       // A slot that has not started yet must not be checkable.
