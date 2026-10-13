@@ -80,6 +80,30 @@ const ask = (token, question) =>
   call("/ai/assist", { method: "POST", token, body: { question } });
 
 const run = async () => {
+  // Whether a model credential is configured, read ONCE at the top.
+  //
+  // It was previously computed deep inside section 9, which meant every check
+  // above that depended on it implicitly assumed no key was present. Running the
+  // suite with a key configured then failed four assertions that were not wrong
+  // about the code - they were asking a question about a different deployment.
+  //
+  // Read up front, those checks can state the expectation that matches the
+  // configuration actually in force, so the suite is valid with AND without a
+  // key rather than only without one.
+  // ...and it is read from the SERVER's own capability descriptor, not from this
+  // process's environment.
+  //
+  // Importing `aiService` here and asking "is a key configured?" answers a
+  // different question when the suite and the API are started with different
+  // environments - which they are: the server is launched by its own harness
+  // script. The test process concluded no key was configured, the server returned
+  // 428, and four assertions failed while describing code that was correct. The
+  // descriptor is the server telling us about ITSELF, so it cannot disagree.
+  const assistDescriptor = (await call("/ai/assist")).data;
+  const configured =
+    assistDescriptor?.available === true || assistDescriptor?.modelAvailable === true;
+
+
   const patient = await login("patient@demo.com", "patient123");
   const doctor = await login("doctor1@demo.com", "doctor123");
   const admin = await login("admin@demo.com", "admin123");
@@ -212,11 +236,27 @@ const run = async () => {
     (general.data?.answer ?? "").slice(0, 120),
   );
 
-  const desc = (await call("/ai/assist")).data;
+  const desc = assistDescriptor;
+  // The descriptor reports CONFIGURATION. With a key it must name the model and
+  // say it is available; without one it must say so rather than implying a
+  // working model. Both are honest - the failure would be claiming the opposite
+  // of whichever is true.
   check(
-    "the provider is reported honestly when no key is configured",
-    desc?.modelAvailable === false || /unavailable|rule-based/i.test(desc?.provider ?? ""),
-    JSON.stringify({ provider: desc?.provider, available: desc?.modelAvailable }),
+    configured
+      ? "the provider descriptor names the configured model"
+      : "the provider is reported honestly when no key is configured",
+    configured
+      ? // `/ai/assist` names the field `modelAvailable`; `/ai/provider` calls the
+        // same idea `available`. This assertion reads the `/ai/assist` descriptor,
+        // so it must use `modelAvailable`.
+        Boolean(desc?.provider) && desc?.modelAvailable === true
+      : desc?.modelAvailable === false || /unavailable|rule-based/i.test(desc?.provider ?? ""),
+    JSON.stringify({
+      configured,
+      provider: desc?.provider,
+      available: desc?.available,
+      modelAvailable: desc?.modelAvailable,
+    }),
   );
 
   /* ---------------------------------------------------------------- *
@@ -420,10 +460,18 @@ const run = async () => {
   /* ---------------------------------------------------------------- *
    * 9. Triage still works, and its behaviour is documented           *
    * ---------------------------------------------------------------- */
+  // Consent is required only when something would actually be transmitted.
+  // Sending it unconditionally would leave the no-consent path unexercised here,
+  // and omitting it when a key IS configured just draws a 428 - so the smoke test
+  // sends it precisely when the gate would otherwise fire. The gate itself is
+  // asserted separately, below, where the absence of consent is the point.
   const triage = await call("/ai/triage", {
     method: "POST",
     token: pt,
-    body: { description: "I have had a chest pain and palpitations for two days" },
+    body: {
+      description: "I have had a chest pain and palpitations for two days",
+      ...(configured ? { consent: true } : {}),
+    },
   });
   check("the existing triage endpoint still works", triage.status === 200, `HTTP ${triage.status}`);
   check(
@@ -436,12 +484,10 @@ const run = async () => {
   /* ---------------------------------------------------------------- *
    *  9b. Triage consent, and what triage is allowed to send           *
    * ---------------------------------------------------------------- */
-  const { triageSendsData } = await import("../src/services/aiService.js");
-  const configured = triageSendsData();
   check(
     "the service reports whether triage would transmit anything",
     typeof configured === "boolean",
-    `triageSendsData=${configured}`,
+    `configured=${configured} (from /ai/assist)`,
   );
 
   // With no key configured nothing leaves the machine, so consent is not

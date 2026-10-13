@@ -126,6 +126,47 @@ router.post(
 router.get("/session", requireAuth, ctrl.session);
 
 router.get("/me", requireAuth, ctrl.me);
-router.patch("/me", requireAuth, ctrl.updateProfile);
+/**
+ * Phase 13. Bounded, because this endpoint had no validation at all.
+ *
+ * The controller used to `.slice(0, 120)` and `.slice(0, 40)` a longer name and
+ * phone and answer 200, so a 500-character name was quietly stored as its first
+ * 120 characters and the caller was told it had been saved. Silently accepting
+ * data and discarding most of it is worse than refusing it: the user leaves
+ * believing a name is stored when it is not.
+ *
+ * Field names match what the controller reads - `name`, `phone`, `profile`.
+ * An unknown top-level key is ignored rather than rejected, so adding a field
+ * to the client does not require a coordinated server release.
+ */
+router.patch(
+  "/me",
+  requireAuth,
+  // The rule keys are the BODY's field names directly. There is no `{ body: ... }`
+  // wrapper - the middleware reads `req[source]`, and a wrapper would make it
+  // look for a field literally called "body" inside the body.
+  validate({
+    name: { type: "string", min: 1, maxLength: 120 },
+    phone: { type: "string", maxLength: 40 },
+    // Structurally bounded only. Every individual profile field is already
+    // validated by `sanitizeProfileValue` in the controller - allergies to an
+    // array of at most 50 strings, gender and bloodGroup against their allowed
+    // sets, dateOfBirth as a real date, the rest to 240 characters - and that
+    // allow-list is what stops a caller promoting themselves by posting a `role`
+    // key.
+    //
+    // Repeating those rules here would duplicate working logic AND change the
+    // contract: the controller SANITISES a bad field away, whereas a route rule
+    // REJECTS the whole request. That broke the S-08 security check, which posts
+    // `role: "admin"` alongside `allergies: "not-an-array"` and asserts nothing
+    // was persisted. The point stands either way, but rejecting is not this
+    // endpoint's established behaviour, so the sanitiser stays in charge.
+    //
+    // `maxKeys` is the one bound nothing else provides: an object has no
+    // `.length`, so an unbounded blob of keys reaches the sanitiser untouched.
+    profile: { type: "object", maxKeys: 24 },
+  }),
+  ctrl.updateProfile,
+);
 
 export default router;

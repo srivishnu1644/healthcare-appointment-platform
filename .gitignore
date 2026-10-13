@@ -37,8 +37,10 @@ coverage/
 # ---------- browser-automation output ----------
 playwright-report/
 test-results/
-recordings/*.webm
-recordings/*.png
+# Browser-check recordings. The directory was only partially ignored, which left
+# walkthrough-report.json unignored and the folder visible in `git status` at
+# 41MB. Excluded in full.
+recordings/
 
 # ---------- editor / OS ----------
 .vscode/*

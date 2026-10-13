@@ -118,13 +118,29 @@ const INSECURE_SECRETS = new Set([
   "change-me",
   "secret",
   "your-secret-key",
+  // The deterministic TEST secret.
+  //
+  // It is published in this repository, so a production environment that copied
+  // it from a README, a docker-compose example or a careless ticket would be
+  // running on a secret anybody knows - and every token it signs would be
+  // forgeable. It was missing from this list, which is why a Phase 16 audit
+  // found that `NODE_ENV=production JWT_SECRET=test-only-secret-not-for-production`
+  // booted happily: 37 characters, so it also satisfied the length rule.
+  //
+  // Skipped under IS_TEST, because that is the one environment where this value
+  // is the intended secret and every suite signs with it. Refusing it there
+  // would stop every test from booting.
+  "test-only-secret-not-for-production",
 ]);
 
-if (INSECURE_SECRETS.has(process.env.JWT_SECRET)) {
+if (!IS_TEST && INSECURE_SECRETS.has(process.env.JWT_SECRET)) {
   console.error(
     [
       "",
       "[env] FATAL: JWT_SECRET is a known placeholder value.",
+      "",
+      "  This includes the value published in this repository for tests. It must",
+      "  never be used outside NODE_ENV=test - anyone could forge a token.",
       "",
       "  Generate a real secret:",
       "    node -e \"console.log(require('crypto').randomBytes(48).toString('base64url'))\"",

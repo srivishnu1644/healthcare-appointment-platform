@@ -231,7 +231,7 @@ export const isValidDate = (value) => {
 
 /** A 24-hour clock time, "HH:MM", in 00:00-23:59. */
 export const isValidTime = (value) =>
-  typeof value === "string" && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value);
+  typeof value === "string" && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(String(value));
 
 /**
  * A bookable date: a real date, and not before today in the business zone.

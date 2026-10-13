@@ -6,6 +6,11 @@ import {
   requireAppointmentAccess,
 } from "../middlewares/authMiddleware.js";
 import validate from "../middlewares/validateRequest.js";
+// The keys of the transition table ARE the complete set of appointment statuses,
+// so this validates against the same list the booking rules use rather than a
+// second copy that could drift. A status added to the table is accepted here the
+// moment it exists - no second edit in this file.
+import { ALLOWED_TRANSITIONS } from "../services/bookingService.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -79,12 +84,34 @@ router.post(
 
 // Collection-level routes are registered after the `:id` routes above so
 // they are not shadowed by the ownership middleware.
-router.get("/queue", ctrl.liveQueue);
+// `doctorId` and `date` are checked for FORMAT here, but deliberately NOT marked
+// `required`.
+//
+// Marking it required moved the answer for a missing doctorId from the
+// controller's explicit `400 MISSING_DOCTOR` to a generic `422 VALIDATION_ERROR`,
+// and the queue suite caught the regression. The specific message is the more
+// useful contract, so presence stays the controller's job and the route only
+// refuses a value that is present and malformed - which used to reach a uuid
+// cast and answer 500.
+router.get(
+  "/queue",
+  validate(
+    {
+      doctorId: { type: "uuid" },
+      date: { type: "date" },
+    },
+    "query",
+  ),
+  ctrl.liveQueue,
+);
 
 // Call the next patient. Registered here, beside the read, so the collection
-// path exists before any `:id` route could shadow it. The validator has no
-// pattern rule, so the date format is checked in the controller, which reports
-// a precise error rather than a generic validation failure.
+// path exists before any `:id` route could shadow it.
+//
+// The date is checked in the CONTROLLER, not here, and that is deliberate: this
+// endpoint answers MISSING_DATE for an absent field and INVALID_DATE for one
+// that is malformed. A single `required` rule cannot tell those apart, and the
+// two messages tell a caller whether they forgot a field or mistyped it.
 router.post(
   "/queue/next",
   validate({
@@ -96,9 +123,42 @@ router.post(
   ctrl.callNext,
 );
 
-router.get("/availability", ctrl.availabilitySummary);
+// Same reasoning as `/queue`: format checked here, presence left to the
+// controller so `400 MISSING_DOCTOR` is preserved.
+router.get(
+  "/availability",
+  validate(
+    {
+      doctorId: { type: "uuid" },
+      date: { type: "date" },
+    },
+    "query",
+  ),
+  ctrl.availabilitySummary,
+);
 
-router.get("/", ctrl.listAppointments);
+// Phase 13. `status` is an enum rather than a free string: an unknown status
+// used to return 200 with an empty list, which reads as "you have none" rather
+// than "that is not a status". `limit`/`offset` are bounded so page 2 cannot be
+// silently page 1. `from`/`to` use `calendarDate` rather than `date` because on
+// this endpoint there is no controller-level date check to catch 2026-02-31 -
+// without it the value reaches a `::date` cast and answers 500.
+router.get(
+  "/",
+  validate(
+    {
+      status: { type: "string", maxLength: 120, enumList: Object.keys(ALLOWED_TRANSITIONS) },
+      doctorId: { type: "uuid" },
+      patientId: { type: "uuid" },
+      from: { type: "calendarDate" },
+      to: { type: "calendarDate" },
+      limit: { type: "number", min: 1, max: 200 },
+      offset: { type: "number", min: 0 },
+    },
+    "query",
+  ),
+  ctrl.listAppointments,
+);
 router.get(
   "/:id",
   requireAppointmentAccess("You cannot view this appointment"),

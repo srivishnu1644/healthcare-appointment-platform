@@ -335,6 +335,12 @@ export const api = {
   adminServices: () => request("/admin/services"),
   adminPatients: () => request("/admin/patients"),
   adminNotifications: (params) => request(`/admin/notifications${qs(params)}`),
+  // Phase 12: the cross-clinic operational views.
+  adminAppointments: (params) => request(`/admin/appointments${qs(params)}`),
+  adminQueue: (params) => request(`/admin/queue${qs(params)}`),
+  adminAvailability: (id, params) =>
+    request(`/admin/doctors/${id}/availability${qs(params)}`),
+  adminScheduler: () => request("/admin/scheduler"),
 };
 
 export default api;

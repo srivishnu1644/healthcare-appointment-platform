@@ -63,6 +63,8 @@ router.post(
     // is rejected before it is parsed further, not because the service trusts
     // the route to have checked it.
     question: { required: true, type: "string", min: 3, maxLength: 1000 },
+    // Optional conversation label echoed back to the client.
+    sessionId: { type: "string", maxLength: 64 },
   }),
   ctrl.assist,
 );
@@ -75,9 +77,13 @@ router.post(
     description: { required: true, type: "string", min: 3, maxLength: 2000 },
     symptoms: { type: "string", maxLength: 2000 },
     reason: { type: "string", maxLength: 500 },
-    age: { type: "number" },
-    gender: { type: "string" },
-    history: { type: "array" },
+    // Phase 13: bounded rather than merely typed. `age` was an unconstrained
+    // number, so -5 and 99999 both reached the prompt; `history` was an
+    // unbounded array, so a caller could attach megabytes to a request that is
+    // billed per token.
+    age: { type: "number", min: 0, max: 130 },
+    gender: { type: "string", maxLength: 40 },
+    history: { type: "array", maxLength: 40 },
     // Explicit consent to send the description to a third-party AI service.
     // Optional in the schema because it is only REQUIRED when a model is
     // configured; the service enforces that and refuses with CONSENT_REQUIRED.

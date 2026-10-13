@@ -66,7 +66,12 @@ export default function AdminDashboard() {
     return (
       <div className="page">
         <div className="container">
-          <Alert tone="danger">{error}</Alert>
+          <Alert tone="danger">
+            {error}{" "}
+            <button type="button" className="btn btn-secondary btn-sm" onClick={load}>
+              Retry
+            </button>
+          </Alert>
         </div>
       </div>
     );
@@ -78,6 +83,12 @@ export default function AdminDashboard() {
     trend = [],
     bySpecialty = [],
     topDoctors = [],
+    // Operations, added in Phase 12: is the clinic running RIGHT NOW, rather than
+    // how it trended. These arrive on the same overview rather than needing three
+    // more round trips before the page can answer the obvious question.
+    queue = {},
+    notifications = {},
+    scheduler = null,
   } = data;
 
   return (
@@ -98,6 +109,57 @@ export default function AdminDashboard() {
             Refresh
           </button>
         </div>
+
+        {/* ---- live operations ---- */}
+        <div className="grid grid-4">
+          <Stat
+            label="In waiting rooms"
+            value={num(queue.waiting ?? 0)}
+            sub={`${num(queue.rooms ?? 0)} room(s) open`}
+          />
+          <Stat
+            label="In consultation"
+            value={num(queue.inConsultation ?? 0)}
+            sub={
+              queue.oldestWaitingAt
+                ? `oldest waiting ${new Date(queue.oldestWaitingAt).toLocaleTimeString()}`
+                : "nobody waiting"
+            }
+          />
+          <Stat
+            label="Notifications (24h)"
+            value={num(notifications.last24h ?? 0)}
+            sub={`${num(notifications.unread ?? 0)} unread in total`}
+          />
+          <Stat
+            label="Outbox"
+            value={num(notifications.deliveries?.queued ?? 0)}
+            sub={
+              scheduler?.running
+                ? `timer on · every ${scheduler.intervalMinutes} min`
+                : "timer off"
+            }
+            tone={(notifications.deliveries?.queued ?? 0) > 0 ? "warning" : undefined}
+          />
+        </div>
+
+        {scheduler && (
+          <Alert tone={scheduler.lastError ? "warning" : "info"}>
+            <span className="small">
+              Background passes: <strong>{scheduler.running ? "running" : "stopped"}</strong>
+              {scheduler.enabled ? "" : " (disabled by configuration)"}
+              {" · "}
+              {scheduler.lastRun
+                ? `last reminder sweep ${scheduler.lastRun.processed ?? 0} sent`
+                : "no reminder sweep recorded yet"}
+              {" · "}
+              {scheduler.lastDrain
+                ? `last outbox drain ${scheduler.lastDrain.processed ?? 0} delivered`
+                : "no drain recorded yet"}
+              . {scheduler.note}
+            </span>
+          </Alert>
+        )}
 
         {/* primary KPIs */}
         <div className="grid grid-4">

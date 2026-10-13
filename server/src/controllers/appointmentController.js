@@ -4,6 +4,7 @@ import { facilities } from "../repositories/referenceRepo.js";
 import { sendSuccess, AppError, asyncHandler } from "../utils/responses.js";
 import { resolveAppointmentAccess } from "../middlewares/authMiddleware.js";
 import { publicDoctor } from "../utils/projections.js";
+import { isValidDate } from "../utils/time.js";
 import logger from "../utils/logger.js";
 import {
   getSlots,
@@ -306,6 +307,20 @@ export const liveQueue = asyncHandler(async (req, res) => {
   if (!doctorId)
     throw new AppError("doctorId is required", 400, "MISSING_DOCTOR");
 
+  // Validated as a REAL day, not merely as the right number of digits and dashes.
+  //
+  // The shape-only check that used to be here let 2026-02-31 through, and it then
+  // reached a `::date` cast deep in the queue query. PostgreSQL raised
+  // "date/time field value out of range" and the caller received a 500 for a
+  // mistyped query parameter.
+  if (date !== undefined && !isValidDate(date)) {
+    throw new AppError(
+      "date must be a real calendar date (YYYY-MM-DD)",
+      400,
+      "INVALID_DATE",
+    );
+  }
+
   let resolvedDate = date;
   if (!resolvedDate) {
     const slots = await getSlots({ doctorId });
@@ -316,7 +331,7 @@ export const liveQueue = asyncHandler(async (req, res) => {
   // room view is used whenever a date is known. `getQueue` remains for the
   // undated path, where there is no room to scope to.
   const room =
-    resolvedDate && /^\d{4}-\d{2}-\d{2}$/.test(resolvedDate)
+    resolvedDate && isValidDate(resolvedDate)
       ? await queueService.getRoom(doctorId, resolvedDate)
       : await queueService.getQueue(doctorId, resolvedDate);
   const queue = room;
@@ -394,8 +409,19 @@ export const callNext = asyncHandler(async (req, res) => {
   const { doctorId, date } = req.body ?? {};
 
   if (!doctorId) throw new AppError("doctorId is required", 400, "MISSING_DOCTOR");
-  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+  // `isValidDate`, not a shape regex: 2026-02-31 has the right SHAPE and no day
+  // behind it, and it used to become a 500 from the clinic_date cast in the queue
+  // query. Missing and malformed answer with different codes so a caller can tell
+  // a typo from an omitted field.
+  if (!date) {
     throw new AppError("date must be YYYY-MM-DD", 400, "MISSING_DATE");
+  }
+  if (!isValidDate(date)) {
+    throw new AppError(
+      "date must be a real calendar date (YYYY-MM-DD)",
+      400,
+      "INVALID_DATE",
+    );
   }
 
   // Only the provider this room belongs to (or an admin) may advance it. A

@@ -31,6 +31,8 @@ const AdminDashboard = lazy(() => import("./pages/admin/AdminDashboard.jsx"));
 const AdminDoctors = lazy(() => import("./pages/admin/AdminDoctors.jsx"));
 const AdminFacilities = lazy(() => import("./pages/admin/AdminFacilities.jsx"));
 const AdminPatients = lazy(() => import("./pages/admin/AdminPatients.jsx"));
+const AdminAppointments = lazy(() => import("./pages/admin/AdminAppointments.jsx"));
+const AdminQueue = lazy(() => import("./pages/admin/AdminQueue.jsx"));
 const AdminNotifications = lazy(() => import("./pages/admin/AdminNotifications.jsx"));
 
 /* ------------------------------------------------------------------ *
@@ -212,6 +214,22 @@ export default function App() {
             element={
               <Protected roles={["admin"]}>
                 <AdminNotifications />
+              </Protected>
+            }
+          />
+          <Route
+            path="/admin/appointments"
+            element={
+              <Protected roles={["admin"]}>
+                <AdminAppointments />
+              </Protected>
+            }
+          />
+          <Route
+            path="/admin/queue"
+            element={
+              <Protected roles={["admin"]}>
+                <AdminQueue />
               </Protected>
             }
           />

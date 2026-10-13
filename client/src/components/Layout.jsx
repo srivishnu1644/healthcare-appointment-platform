@@ -29,6 +29,8 @@ const NAV = {
     { to: "/admin/doctors", label: "Doctors" },
     { to: "/admin/facilities", label: "Facilities" },
     { to: "/admin/patients", label: "Patients" },
+    { to: "/admin/appointments", label: "Appointments" },
+    { to: "/admin/queue", label: "Waiting rooms" },
     { to: "/admin/notifications", label: "Notification log" },
     { to: "/profile", label: "Profile" },
   ],

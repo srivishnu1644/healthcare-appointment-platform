@@ -3,8 +3,8 @@
  * Phase 7 client checks — runs the client in a real browser and reports.
  *
  *   node scripts/hook-checks.mjs                     # dev server on :5174
- *   HARNESS_URL=http://localhost:5174 \
- *   APP_URL=http://localhost:4173 node scripts/hook-checks.mjs
+        "  HARNESS_URL=http://localhost:5174 APP_URL=http://localhost:4173 " +
+        "node scripts/hook-checks.mjs",
  *
  * TEN PARTS
  *   1. The harness page (client/checks.html) mounts the real hooks and the real
@@ -104,6 +104,29 @@ const checkRedirectedToLogin = async (page, name) => {
  *  Part 1 — the harness page                                           *
  * ------------------------------------------------------------------ */
 async function runHarness(browser) {
+  // Fail fast and clearly rather than waiting out the timeout.
+  //
+  // `HARNESS_URL` defaults to `APP_URL`, so running with only `APP_URL` pointed
+  // at the production preview silently sends this at a server that answers
+  // `/checks.html` with the SPA fallback. That page never sets
+  // `__CHECKS_DONE__`, so the run ended in a timeout that reads like "the harness
+  // is broken" rather than "you gave it the wrong URL".
+  const probe = await fetch(`${HARNESS_URL}/checks.html`).catch(() => null);
+  const served = probe ? await probe.text() : "";
+  // `__RESULTS__` is set by `src/checks/main.jsx`, NOT by checks.html, so probing
+  // the HTML for it rejects a perfectly good dev server. checks.html defines the
+  // network stub and loads the harness module; both are markers of the real page.
+  const isHarnessPage = served.includes("/src/checks/main.jsx") && served.includes("__net");
+  if (!isHarnessPage) {
+    throw new Error(
+      "HARNESS_URL (" +
+        HARNESS_URL +
+        ") does not serve checks.html. It defaults to APP_URL, and the " +
+        "production preview serves the SPA fallback for unknown paths. " +
+        "Run with both HARNESS_URL and APP_URL set explicitly.",
+    );
+  }
+
   const context = await browser.newContext({ timezoneId: TZ });
   const page = await context.newPage();
 
@@ -116,7 +139,14 @@ async function runHarness(browser) {
 
   try {
     await page.goto(`${HARNESS_URL}/checks.html`, { waitUntil: "domcontentloaded" });
-    await page.waitForFunction(() => window.__CHECKS_DONE__ === true, {
+    // `null` is the `arg` parameter. Playwright's signature is
+    // `waitForFunction(pageFunction, arg, options)`, so passing `{ timeout }` as
+    // the SECOND argument sends it as `arg` and the timeout is silently ignored -
+    // every one of these waits was running on Playwright's 30-second default
+    // regardless of what it asked for. The harness timed out at 30s while
+    // explicitly requesting 60s, which reads exactly like "the page never
+    // finished" rather than "the option was dropped".
+    await page.waitForFunction(() => window.__CHECKS_DONE__ === true, null, {
       timeout: 60000,
     });
     results.push(...(await page.evaluate(() => window.__RESULTS__)));
@@ -161,7 +191,7 @@ async function runPolling(browser) {
     await page.getByRole("button", { name: "Sign in" }).click();
     // Sign-in is a SPA transition; networkidle can resolve before the router
     // has navigated.
-    await page.waitForFunction(() => !location.pathname.startsWith("/login"), {
+    await page.waitForFunction(() => !location.pathname.startsWith("/login"), null, {
       timeout: 15000,
     });
     // Let the sign-in's own traffic finish before counting. Otherwise a request
@@ -375,7 +405,7 @@ async function runDashboard(browser) {
     await page.locator("#email").fill(PATIENT.email);
     await page.locator("#password").fill(PATIENT.password);
     await page.getByRole("button", { name: "Sign in" }).click();
-    await page.waitForFunction(() => !location.pathname.startsWith("/login"), {
+    await page.waitForFunction(() => !location.pathname.startsWith("/login"), null, {
       timeout: 15000,
     });
     await page.waitForLoadState("networkidle");
@@ -519,7 +549,7 @@ async function runAppointmentCardChecks(browser) {
     await page.locator("#email").fill(PATIENT.email);
     await page.locator("#password").fill(PATIENT.password);
     await page.getByRole("button", { name: "Sign in" }).click();
-    await page.waitForFunction(() => !location.pathname.startsWith("/login"), {
+    await page.waitForFunction(() => !location.pathname.startsWith("/login"), null, {
       timeout: 15000,
     });
     await page.waitForLoadState("networkidle");
@@ -738,7 +768,7 @@ async function runDetailChecks(browser) {
     await page.locator("#email").fill(PATIENT.email);
     await page.locator("#password").fill(PATIENT.password);
     await page.getByRole("button", { name: "Sign in" }).click();
-    await page.waitForFunction(() => !location.pathname.startsWith("/login"), {
+    await page.waitForFunction(() => !location.pathname.startsWith("/login"), null, {
       timeout: 15000,
     });
     await page.waitForLoadState("networkidle");
@@ -1022,7 +1052,7 @@ async function runBookingChecks(browser) {
     await page.locator("#email").fill(PATIENT.email);
     await page.locator("#password").fill(PATIENT.password);
     await page.getByRole("button", { name: "Sign in" }).click();
-    await page.waitForFunction(() => !location.pathname.startsWith("/login"), {
+    await page.waitForFunction(() => !location.pathname.startsWith("/login"), null, {
       timeout: 15000,
     });
     await page.waitForLoadState("networkidle");
@@ -1257,7 +1287,7 @@ async function runRescheduleChecks(browser) {
     await page.locator("#email").fill(PATIENT.email);
     await page.locator("#password").fill(PATIENT.password);
     await page.getByRole("button", { name: "Sign in" }).click();
-    await page.waitForFunction(() => !location.pathname.startsWith("/login"), {
+    await page.waitForFunction(() => !location.pathname.startsWith("/login"), null, {
       timeout: 15000,
     });
     await page.waitForLoadState("networkidle");
@@ -2668,7 +2698,7 @@ async function runQueueRoomChecks(browser) {
     await page.locator("#email").fill(DOCTOR.email);
     await page.locator("#password").fill(DOCTOR.password);
     await page.getByRole("button", { name: "Sign in" }).click();
-    await page.waitForFunction(() => !location.pathname.startsWith("/login"), {
+    await page.waitForFunction(() => !location.pathname.startsWith("/login"), null, {
       timeout: 20000,
     });
     await page.waitForLoadState("networkidle").catch(() => {});
@@ -3073,7 +3103,7 @@ async function runQueueRoomChecks(browser) {
     await page.locator("#email").fill(DOCTOR.email);
     await page.locator("#password").fill(DOCTOR.password);
     await page.getByRole("button", { name: "Sign in" }).click();
-    await page.waitForFunction(() => !location.pathname.startsWith("/login"), {
+    await page.waitForFunction(() => !location.pathname.startsWith("/login"), null, {
       timeout: 20000,
     });
     await page.waitForLoadState("networkidle").catch(() => {});

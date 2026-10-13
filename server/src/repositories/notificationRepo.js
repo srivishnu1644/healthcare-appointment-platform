@@ -36,7 +36,13 @@ const toNotification = (r) =>
  * caller, and that check belongs in the controller, not here.
  */
 export const listForUser = async (userId, limit = 50) => {
-  const safeLimit = Math.min(Number(limit) || 50, 200);
+  // Clamped on BOTH sides.
+  //
+  // `Math.min(Number(limit) || 50, 200)` had no lower bound, so `?limit=-1`
+  // became `LIMIT -1` and PostgreSQL raised "LIMIT must not be negative" - a 500
+  // for a query parameter. `|| 50` only catches 0, NaN and "", never a negative
+  // number, because -1 is truthy.
+  const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
   return (
     await rows(
       `SELECT n.id, n.user_id, n.appointment_id, n.event, n.title, n.body,

@@ -1,6 +1,8 @@
 import doctorRepo from "../repositories/doctorRepo.js";
 import { facilities, services } from "../repositories/referenceRepo.js";
 import analyticsRepo from "../repositories/analyticsRepo.js";
+import adminOpsRepo from "../repositories/adminOpsRepo.js";
+import * as time from "../utils/time.js";
 import { sendSuccess, AppError, asyncHandler } from "../utils/responses.js";
 import { publicDoctor, stripSecrets } from "../utils/projections.js";
 import logger from "../utils/logger.js";
@@ -17,15 +19,94 @@ const log = logger.tag("admin");
 export const overview = asyncHandler(async (req, res) => {
   const today = await analyticsRepo.todayLocal();
 
-  const [kpis, counts, trend, bySpecialty, topDoctors] = await Promise.all([
-    analyticsRepo.kpis(today),
-    analyticsRepo.counts(),
-    analyticsRepo.trend(14),
-    analyticsRepo.bySpecialty(),
-    analyticsRepo.topDoctors(8),
-  ]);
+  // Queue and notification operations are part of "is the clinic running", not a
+  // separate question, so they belong on the same screen. The scheduler status
+  // is included so a stale background timer is visible from the dashboard rather
+  // than only from a dedicated endpoint.
+  const { schedulerState } = await import("../services/scheduler.js");
 
-  return sendSuccess(res, { kpis, counts, trend, bySpecialty, topDoctors });
+  const [kpis, counts, trend, bySpecialty, topDoctors, queue, notifications, scheduler] =
+    await Promise.all([
+      analyticsRepo.kpis(today),
+      analyticsRepo.counts(),
+      analyticsRepo.trend(14),
+      analyticsRepo.bySpecialty(),
+      analyticsRepo.topDoctors(8),
+      adminOpsRepo.queueSummary(),
+      adminOpsRepo.notificationOps(),
+      schedulerState().catch(() => null),
+    ]);
+
+  return sendSuccess(res, {
+    kpis,
+    counts,
+    trend,
+    bySpecialty,
+    topDoctors,
+    queue,
+    notifications,
+    scheduler,
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ *  GET /api/admin/appointments                                        *
+ *                                                                     *
+ *  The cross-clinic appointment view. Read-only: any CHANGE an admin  *
+ *  makes goes through /appointments/:id/status, so the ownership,      *
+ *  transition and lock rules are the same ones a provider gets.       *
+ * ------------------------------------------------------------------ */
+export const listAppointments = asyncHandler(async (req, res) => {
+  const result = await adminOpsRepo.listAppointments({
+    search: req.query.search,
+    status: req.query.status,
+    doctorId: req.query.doctorId,
+    patientId: req.query.patientId,
+    from: req.query.from,
+    to: req.query.to,
+    sort: req.query.sort,
+    limit: req.query.limit,
+    offset: req.query.offset,
+  });
+  return sendSuccess(res, result);
+});
+
+/* ------------------------------------------------------------------ *
+ *  GET /api/admin/queue      the live waiting rooms                    *
+ * ------------------------------------------------------------------ */
+export const queueOverview = asyncHandler(async (req, res) =>
+  sendSuccess(
+    res,
+    await adminOpsRepo.activeRooms({
+      limit: req.query.limit,
+      offset: req.query.offset,
+    }),
+  ),
+);
+
+/* ------------------------------------------------------------------ *
+ *  GET /api/admin/doctors/:id/availability                            *
+ * ------------------------------------------------------------------ */
+export const doctorAvailability = asyncHandler(async (req, res) => {
+  const date = req.query.date || (await import("../utils/time.js")).localDate(new Date());
+  const found = await doctorRepo.findById(req.params.id);
+  if (!found) throw new AppError("Doctor not found", 404, "DOCTOR_NOT_FOUND");
+  return sendSuccess(
+    res,
+    await adminOpsRepo.doctorAvailability(req.params.id, date),
+  );
+});
+
+/* ------------------------------------------------------------------ *
+ *  GET /api/admin/scheduler    background pass health                 *
+ * ------------------------------------------------------------------ */
+export const schedulerStatus = asyncHandler(async (_req, res) => {
+  const { schedulerState } = await import("../services/scheduler.js");
+  const [state, notifications] = await Promise.all([
+    schedulerState(),
+    adminOpsRepo.notificationOps(),
+  ]);
+  return sendSuccess(res, { ...state, notifications });
 });
 
 /* ------------------------------------------------------------------ *
@@ -191,8 +272,31 @@ export const updateFacility = asyncHandler(async (req, res) => {
 export const listPatients = asyncHandler(async (req, res) => {
   // `stripSecrets` is a second pass so a future column cannot leak from
   // this PHI view. The repository never selects a password.
-  const patients = (await analyticsRepo.patients()).map(stripSecrets);
-  return sendSuccess(res, { patients, count: patients.length });
+  //
+  // A search, a sort or an offset means the paginated query; with none of them
+  // the unpaginated dashboard query is used, so the existing shape (and the
+  // existing callers) are untouched.
+  const wantsPaging =
+    req.query.search || req.query.sort || req.query.limit || req.query.offset;
+
+  if (!wantsPaging) {
+    const patients = (await analyticsRepo.patients()).map(stripSecrets);
+    return sendSuccess(res, { patients, count: patients.length });
+  }
+
+  const result = await adminOpsRepo.searchPatients({
+    search: req.query.search,
+    sort: req.query.sort,
+    limit: req.query.limit,
+    offset: req.query.offset,
+  });
+  return sendSuccess(res, {
+    patients: result.patients.map(stripSecrets),
+    count: result.total,
+    total: result.total,
+    limit: result.limit,
+    offset: result.offset,
+  });
 });
 
 /* ------------------------------------------------------------------ *
