@@ -762,6 +762,80 @@ const run = async () => {
       outcome.results.some((r) => r.channel === "in-app" && r.status === "delivered"),
     JSON.stringify(outcome).slice(0, 140),
   );
+
+
+/* ---------------------------------------------------------------- *
+   *  Email adapter: mocked Resend delivery                            *
+   * ---------------------------------------------------------------- */
+  // Must set adapter BEFORE any sendEmail calls
+  process.env.EMAIL_ADAPTER = "mock";
+  const { sendEmail } = await import("../src/services/notificationService.js");
+  const { sendNotifications } = await import("../src/services/notificationService.js");
+
+  // --- successful mock delivery ---
+  const mockSuccess = await sendEmail("patient@example.com", "Test Subject", "Test Body");
+  check(
+    "mock adapter returns sent status",
+    mockSuccess.status === "sent" && mockSuccess.providerMsgId.startsWith("mock-"),
+    JSON.stringify(mockSuccess),
+  );
+
+  // --- mock failure ---
+  process.env.EMAIL_ADAPTER = "mock-fail";
+  const mockFail = await sendEmail("fail@example.com", "Fail Subject", "Fail Body");
+  check(
+    "mock-fail adapter returns failed status with error",
+    mockFail.status === "failed" && mockFail.error && mockFail.error.includes("mock"),
+    JSON.stringify(mockFail),
+  );
+
+  // Create a test patient for the email tests
+  const { hashPassword } = await import("../src/utils/password.js");
+  const email = `mock-email-${RUN_ID}@phase10.test`;
+  const mockPatient = await query(
+    `INSERT INTO users (email, password_hash, role, full_name, phone)
+     VALUES ($1, $2, 'patient', $3, $4)
+     ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash
+     RETURNING id`,
+    [
+      email,
+      await hashPassword("test12345"),
+      "Mock Email Patient",
+      `+9192${RUN_ID.slice(-8)}`,
+    ],
+  );
+  const mockPatientId = mockPatient.rows[0].id;
+
+  // --- full sendNotifications path with mock adapter ---
+  process.env.EMAIL_ADAPTER = "mock";
+          const mockNotifs = await sendNotifications({
+    event: "appointment_booked",
+    userId: mockPatientId,
+    channels: ["email"],
+    patient: { id: mockPatientId, email: email },
+        appointment: { patientName: "Mock Email Patient" },
+    doctor: { id: "mock-doctor", name: "Dr. Mock", specialtyName: "General Medicine", facilityName: "Mock Clinic" },
+  });;;
+  check(
+    "sendNotifications with mock adapter enqueues and delivers",
+    mockNotifs.length === 1 && mockNotifs[0].subject === "Appointment confirmed",
+    "count=" + mockNotifs.length,
+  );
+
+  const delivered = mockNotifs[0];
+  console.log("DEBUG delivered:", JSON.stringify(delivered, null, 2));
+  console.log("DEBUG delivered.results:", JSON.stringify(delivered.results, null, 2));
+  const emailResult = delivered.results && delivered.results.find(r => r.channel === "email");
+  check(
+    "mock email is delivered with mock providerMsgId",
+    delivered.status === "sent" && emailResult && emailResult.providerMsgId && emailResult.providerMsgId.startsWith("mock-"),
+    "status=" + delivered.status + " msgId=" + (emailResult && emailResult.providerMsgId ? emailResult.providerMsgId : "MISSING"),
+  );
+
+  // Clean up
+  delete process.env.EMAIL_ADAPTER;
+
+
 };
 
 run()

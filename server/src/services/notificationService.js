@@ -22,6 +22,27 @@ const TWILIO_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 const TWILIO_FROM = process.env.TWILIO_FROM_NUMBER;
 const RESEND_KEY = process.env.RESEND_API_KEY;
+
+/**
+ * Test adapter for email, mirroring `TRIAGE_ADAPTER` and `ASSISTANT_ADAPTER`.
+ *
+ * `EMAIL_ADAPTER=mock` returns a canned success and `EMAIL_ADAPTER=mock-fail`
+ * a canned failure, so the delivery path is exercised with no network call and
+ * no real email sent. Without it, the only way to test a successful Resend
+ * delivery is to send a real email, which is exactly what an automated suite
+ * must not do.
+ *
+ * Checked BEFORE the `channels.email` gate on purpose: in a test environment no
+ * Resend key is configured, so the gate would answer "simulated" and the mock
+ * would never be reached.
+ *
+ * Refused in production: a test double that answers instead of a provider would
+ * be indistinguishable from the real thing in the logs.
+ */
+const EMAIL_ADAPTER = process.env.EMAIL_ADAPTER;
+if (EMAIL_ADAPTER && process.env.NODE_ENV === "production") {
+  throw new Error("EMAIL_ADAPTER must not be set in production.");
+}
 const FROM_EMAIL =
   process.env.NOTIFICATION_FROM_EMAIL || "notifications@medicare.demo";
 
@@ -165,6 +186,17 @@ async function sendSms(to, body) {
 }
 
 async function sendEmail(to, subject, body) {
+  // Read the adapter at call time, not module load time, so tests can override it.
+  const adapter = process.env.EMAIL_ADAPTER;
+  log.info(`[EMAIL adapter] to=${to} adapter="${adapter}" channels.email=${channels.email}`);
+  if (adapter === "mock") {
+    log.info(`[EMAIL mock] returning sent`);
+    return { channel: "email", status: "sent", providerMsgId: `mock-${Date.now()}` };
+  }
+  if (adapter === "mock-fail") {
+    return { channel: "email", status: "failed", error: "mock Resend 400 Bad Request" };
+  }
+
   if (!channels.email) {
     log.info(`[EMAIL -> console] to=${to || "n/a"} :: ${subject} :: ${body}`);
     return { channel: "email", status: "simulated" };
@@ -645,6 +677,8 @@ export const schedulerStatus = async () => {
     lastDrain: byKind.outbox ?? null,
   };
 };
+
+export { sendEmail };
 
 export default {
   sendNotifications,
