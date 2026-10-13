@@ -29,6 +29,7 @@
  * database directly, because the bundled local PostgreSQL serves one client and
  * the API owns it.
  */
+import "./local-db-guard.mjs"; // MUST stay first: applies the local-DB override.
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";

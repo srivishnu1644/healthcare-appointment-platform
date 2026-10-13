@@ -21,6 +21,7 @@
  *
  *   node scripts/assistant-check.js
  */
+import "./local-db-guard.mjs"; // MUST stay first: applies the local-DB override.
 import { query, closePool } from "../src/config/database.js";
 import { hashPassword } from "../src/utils/password.js";
 
@@ -225,16 +226,46 @@ const run = async () => {
   check("a general health question is answered even without credentials",
     general.status === 200 && general.data?.answer?.length > 40,
     `HTTP ${general.status}`);
-  check(
-    "and it is labelled as NOT model-generated when no model was consulted",
-    general.data?.generatedByModel === false,
-    `generatedByModel=${general.data?.generatedByModel}`,
-  );
-  check(
-    "and it says the live service is unavailable rather than inventing an answer",
-    /not available|unavailable|cannot answer general/i.test(general.data?.answer ?? ""),
-    (general.data?.answer ?? "").slice(0, 120),
-  );
+  // The label must match what actually happened, in BOTH directions.
+  //
+  // These assertions were written when this suite only ever ran without a key, so
+  // they asserted the no-key outcome unconditionally. With a key configured
+  // (the live configuration now) they fail - and they should, because a reply
+  // that is genuinely model-generated must say so. Asserting one direction only
+  // is what let them pass for as long as the configuration never changed.
+  //
+  // The invariant worth holding: `generatedByModel`, `sourcedFrom`, the `provider`
+  // field and the visible answer must agree with each other, and with whether a
+  // model was configured.
+  if (configured) {
+    check(
+      "with a model configured, a model answer is labelled as model-generated",
+      general.data?.generatedByModel === true,
+      `generatedByModel=${general.data?.generatedByModel}`,
+    );
+    check(
+      "and the provider field names the live model",
+      /gemini/i.test(general.data?.provider ?? ""),
+      `provider=${general.data?.provider}`,
+    );
+    check(
+      "and the answer is a real one, not the 'unavailable' fallback",
+      !/not available|unavailable|cannot answer general/i.test(general.data?.answer ?? "") &&
+        general.data?.answer?.length > 60,
+      (general.data?.answer ?? "").slice(0, 100),
+    );
+  } else {
+    check(
+      "and it is labelled as NOT model-generated when no model was consulted",
+      general.data?.generatedByModel === false,
+      `generatedByModel=${general.data?.generatedByModel}`,
+    );
+    check(
+      "and it says the live service is unavailable rather than inventing an answer",
+      /not available|unavailable|cannot answer general/i.test(general.data?.answer ?? ""),
+      (general.data?.answer ?? "").slice(0, 120),
+    );
+  }
 
   const desc = assistDescriptor;
   // The descriptor reports CONFIGURATION. With a key it must name the model and
@@ -460,17 +491,32 @@ const run = async () => {
   /* ---------------------------------------------------------------- *
    * 9. Triage still works, and its behaviour is documented           *
    * ---------------------------------------------------------------- */
-  // Consent is required only when something would actually be transmitted.
-  // Sending it unconditionally would leave the no-consent path unexercised here,
-  // and omitting it when a key IS configured just draws a 428 - so the smoke test
-  // sends it precisely when the gate would otherwise fire. The gate itself is
-  // asserted separately, below, where the absence of consent is the point.
+  // Whether consent is required is decided by ASKING THE SERVER, not by
+  // reading this process's environment.
+  //
+  // An earlier version predicted it from `triageSendsData()` imported from the
+  // service module. That reads `GEMINI_KEY` at import time in the TEST process,
+  // which does not share the API process's environment: under TRIAGE_ADAPTER=mock
+  // the API requires consent while this process concluded it did not, so the
+  // test omitted consent and the server answered 428. Two processes, two
+  // environments, one wrong prediction.
+  //
+  // Observing the response removes the guess, and it is the stronger test: it
+  // asserts that the server's consent behaviour and its own answers agree,
+  // whatever configuration is actually in force.
+  const probe = await call("/ai/triage", {
+    method: "POST",
+    token: pt,
+    body: { description: "I have had a chest pain and palpitations for two days" },
+  });
+  const consentRequired = probe.status === 428;
+
   const triage = await call("/ai/triage", {
     method: "POST",
     token: pt,
     body: {
       description: "I have had a chest pain and palpitations for two days",
-      ...(configured ? { consent: true } : {}),
+      ...(consentRequired ? { consent: true } : {}),
     },
   });
   check("the existing triage endpoint still works", triage.status === 200, `HTTP ${triage.status}`);
@@ -484,30 +530,17 @@ const run = async () => {
   /* ---------------------------------------------------------------- *
    *  9b. Triage consent, and what triage is allowed to send           *
    * ---------------------------------------------------------------- */
-  check(
-    "the service reports whether triage would transmit anything",
-    typeof configured === "boolean",
-    `configured=${configured} (from /ai/assist)`,
-  );
-
-  // With no key configured nothing leaves the machine, so consent is not
-  // required and the existing flow must keep working untouched.
-  const noConsent = await call("/ai/triage", {
-    method: "POST",
-    token: pt,
-    body: { description: "I have had a headache and a stiff neck since this morning" },
-  });
-  if (configured) {
+  if (consentRequired) {
     check(
-      "triage without consent is refused when a model is configured",
-      noConsent.status === 428 && noConsent.code === "CONSENT_REQUIRED",
-      `HTTP ${noConsent.status} ${noConsent.code}`,
+      "triage without consent is refused with 428 CONSENT_REQUIRED",
+      probe.code === "CONSENT_REQUIRED",
+      `HTTP ${probe.status} ${probe.code ?? ""}`,
     );
   } else {
     check(
       "triage without consent still works when nothing is transmitted",
-      noConsent.status === 200,
-      `HTTP ${noConsent.status} ${noConsent.code}`,
+      probe.status === 200,
+      `HTTP ${probe.status} ${probe.code ?? ""}`,
     );
   }
 

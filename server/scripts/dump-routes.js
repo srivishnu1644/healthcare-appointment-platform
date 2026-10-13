@@ -9,6 +9,7 @@
  *
  *   node scripts/dump-routes.js
  */
+import "./local-db-guard.mjs"; // MUST stay first: applies the local-DB override.
 import app from "../src/app.js";
 
 const METHODS = ["get", "post", "patch", "put", "delete", "options", "head"];

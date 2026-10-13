@@ -15,6 +15,7 @@
  * So expired rows are kept for a grace period before deletion. This job is
  * retention, not security; run it on a schedule from wherever jobs live.
  */
+import "./local-db-guard.mjs"; // MUST stay first: applies the local-DB override.
 import sessionRepo from "../src/repositories/sessionRepo.js";
 import { closePool, query } from "../src/config/database.js";
 import logger from "../src/utils/logger.js";

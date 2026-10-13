@@ -27,6 +27,7 @@
  *   * the database stores only digests — never a usable token
  *   * existing user/role authorization still holds
  */
+import "./local-db-guard.mjs"; // MUST stay first: applies the local-DB override.
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";

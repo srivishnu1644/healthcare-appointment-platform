@@ -11,13 +11,38 @@ import logger from "../utils/logger.js";
 
 const log = logger.tag("ai");
 
+// Test adapter for triage, mirroring `ASSISTANT_ADAPTER=stub`.
+//
+// Declared here, above every use, because `aiProvider` below reads it at module
+// evaluation. Declaring it further down put it in the temporal dead zone: the
+// module threw "Cannot access TRIAGE_ADAPTER before initialization" on import.
+const TRIAGE_ADAPTER = process.env.TRIAGE_ADAPTER;
+if (TRIAGE_ADAPTER && process.env.NODE_ENV === "production") {
+  throw new Error("TRIAGE_ADAPTER must not be set in production.");
+}
+
 const GEMINI_KEY = process.env.GEMINI_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+// `gemini-3-flash-preview`.
+//
+// The previous default (`gemini-2.0-flash`) was retired by Google: the API now
+// answers 404 "This model models/gemini-2.0-flash is no longer available". Every
+// triage request was therefore failing over to the rule-based engine while the
+// application still reported a live provider - the worst combination, because it
+// looks configured and silently is not.
+//
+// `gemini-3-flash-preview` is the model chosen for this project. A "preview"
+// name is less stable than a GA one and may change; if you prefer a name that
+// survives retirements, set GEMINI_MODEL=gemini-flash-latest instead. Override
+// freely - this is only the default.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-flash-preview";
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
-export const aiProvider = GEMINI_KEY
-  ? `google-gemini:${GEMINI_MODEL}`
-  : "rule-based-fallback";
+export const aiProvider =
+  TRIAGE_ADAPTER === "mock"
+    ? "mock-adapter"
+    : GEMINI_KEY
+      ? `google-gemini:${GEMINI_MODEL}`
+      : "rule-based-fallback";
 
 /* ------------------------------------------------------------------ *
  *  Rule-based symptom -> specialty map (always available)           *
@@ -80,13 +105,55 @@ function parseModelJson(text) {
   }
 }
 
+// How long to wait for the model before giving up and using the rule-based
+// engine. Was a hardcoded 8000ms, which was never enough for a reasoning model:
+// measured on `gemini-3-flash-preview`, a realistic triage prompt takes 13-21s,
+// so every call was aborting and silently falling back. See `assistantService`
+// for the same change and the numbers behind it.
+const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 30_000;
+
+/**
+ * Canned reply for `TRIAGE_ADAPTER=mock`.
+ *
+ * Valid, well-formed model JSON so the parse-and-ground path — the part that
+ * turns raw model text into departments, urgency and recommended doctor ids — is
+ * exercised with no network call, no latency and no quota. Without it that path
+ * can only be reached by talking to a real model, which is what makes an AI test
+ * suite expensive and flaky.
+ */
+const MOCK_GEMINI_REPLY = JSON.stringify({
+  urgency: "high",
+  departments: ["Cardiology", "General Medicine"],
+  summary: "Sharp chest pain radiating to the arm needs urgent assessment.",
+  followUpQuestions: ["How long has the pain lasted?", "Any shortness of breath?"],
+  redFlags: ["Chest pain or pressure", "Pain radiating to the arm"],
+});
+
 async function askGemini(prompt) {
+  if (TRIAGE_ADAPTER === "mock") {
+    // A little latency so the latency measurement still means something.
+    await new Promise((r) => setTimeout(r, 5));
+    return MOCK_GEMINI_REPLY;
+  }
+
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
+  const timer = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
   try {
-    const res = await fetch(`${GEMINI_URL}?key=${GEMINI_KEY}`, {
+    // The key goes in a HEADER, not `?key=` in the URL.
+    //
+    // This call previously appended the key to the query string. Node's fetch
+    // errors do not echo the URL, so that was not leaking through `err.message`
+    // (verified: both a DNS failure and a connection refusal report only the
+    // host). But a URL is a fragile place for a credential - anything that
+    // logs request lines at the HTTP layer, which `app.js` already does for
+    // inbound requests, would capture it. `assistantService.js` has always
+    // used this header; the two call paths are now the same.
+    const res = await fetch(GEMINI_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_KEY,
+      },
       signal: controller.signal,
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
@@ -110,8 +177,12 @@ async function askGemini(prompt) {
  *
  * With no key the triage engine is entirely rule-based and local, so nothing is
  * transmitted and asking for consent would be theatre.
+ *
+ * The mock adapter counts as "sends data": it stands in for a configured model,
+ * so the consent gate must fire exactly as it does for the real one. Otherwise a
+ * test with the mock would quietly skip the gate it is meant to be checking.
  */
-export const triageSendsData = () => Boolean(GEMINI_KEY);
+export const triageSendsData = () => Boolean(GEMINI_KEY) || TRIAGE_ADAPTER === "mock";
 
 /**
  * Symptom description -> department, urgency and recommended doctors.
@@ -160,7 +231,7 @@ export const analyzeSymptoms = async (description, extra = {}) => {
 
   let result;
 
-  if (GEMINI_KEY) {
+  if (GEMINI_KEY || TRIAGE_ADAPTER === "mock") {
     try {
       const specList = await specialtyRepo.all();
       const specialtyList = specList.map((s) => s.name).join(", ");

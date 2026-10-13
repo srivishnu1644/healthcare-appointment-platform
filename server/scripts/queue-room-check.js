@@ -34,6 +34,7 @@
  *   seeded doctors or the other suites. Everything it creates is removed again.
  */
 
+import "./local-db-guard.mjs"; // MUST stay first: applies the local-DB override.
 import pg from "pg";
 import * as time from "../src/utils/time.js";
 

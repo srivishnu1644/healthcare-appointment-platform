@@ -46,6 +46,45 @@ const IS_TEST = process.env.NODE_ENV === "test";
 const buildConfig = () => {
   const url = process.env.DATABASE_URL?.trim();
 
+  /* ---------------------------------------------------------------- *
+   * Defence in depth: the local-only test guard.                      *
+   *                                                                   *
+   * Every harness imports `scripts/local-db-guard.mjs` first, which  *
+   * applies the isolated local override at module evaluation -       *
+   * BEFORE this module is evaluated. This is the backstop for a      *
+   * script that did not, or imported them in the wrong order:        *
+   * `buildConfig()` runs at module-init, so an override applied      *
+   * afterwards is already too late.                                   *
+   *                                                                   *
+   * Gated on the explicit opt-in flag, so the application's own      *
+   * behaviour - including running against a hosted database - is     *
+   * unchanged. This is a test control, not a product control.        *
+   * ---------------------------------------------------------------- */
+  if (process.env.MEDICARE_TEST_HARNESS === "1") {
+    const allowed = "postgresql://postgres@127.0.0.1:5440/medicare_test";
+    if (url !== allowed) {
+      throw new Error(
+        [
+          "",
+          "LOCAL-DB GUARD (inside database.js): a test harness is running and",
+          "DATABASE_URL is not the authorised isolated local database.",
+          "",
+          "  in force: " +
+            (url
+              ? // Redact the password, and only that.
+                url.replace(/\/\/([^:/@]+):[^@/]+@/, "//$1:<redacted>@")
+              : "(unset)"),
+          "",
+          "  required: " + allowed,
+          "",
+          "  Import local-db-guard.mjs before this module, or set:",
+          "    MEDICARE_TEST_HARNESS=1",
+          "",
+        ].join("\n"),
+      );
+    }
+  }
+
   if (url) {
     const sslRequired =
       process.env.DB_SSL === "true" || !/localhost|127\.0\.0\.1|\.local/.test(url);

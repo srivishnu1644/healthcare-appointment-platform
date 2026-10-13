@@ -19,6 +19,7 @@
  *
  *   node scripts/notification-check.js
  */
+import "./local-db-guard.mjs"; // MUST stay first: applies the local-DB override.
 import { query, one, closePool } from "../src/config/database.js";
 import * as time from "../src/utils/time.js";
 

@@ -11,6 +11,7 @@
  *
  * This is a development convenience only. Nothing in src/ knows about it.
  */
+import "./local-db-guard.mjs"; // MUST stay first: applies the local-DB override.
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";

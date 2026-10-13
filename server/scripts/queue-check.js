@@ -39,6 +39,7 @@
  *   seeded status at the end so repeated runs behave identically.
  */
 
+import "./local-db-guard.mjs"; // MUST stay first: applies the local-DB override.
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";

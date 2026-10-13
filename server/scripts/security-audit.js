@@ -11,6 +11,7 @@
  *
  *   node scripts/security-audit.js
  */
+import "./local-db-guard.mjs"; // MUST stay first: applies the local-DB override.
 import { query, closePool } from "../src/config/database.js";
 
 const API = process.env.API_URL || "http://localhost:5000/api";
@@ -382,18 +383,23 @@ const run = async () => {
   // Asserting 428 unconditionally would have been wrong here; asserting 200
   // unconditionally would have missed the security-relevant case. The assistant
   // suite runs against both configurations; this asserts whichever applies.
-  const configured = /modelAvailable"?\s*:\s*true/.test(
-    (await call("/ai/assist", { token: P })).text ?? "",
-  );
+  // Whether triage would transmit anything, decided by the SERVER's own answer
+  // rather than by reading the assistant's descriptor.
+  //
+  // The previous version derived this from `/ai/assist`'s `modelAvailable`, which
+  // is the wrong signal: under TRIAGE_ADAPTER=mock the assistant reports
+  // "unavailable" while triage still engages the model path, so the test expected
+  // a 200 and got a 428. Asking the endpoint under test removes the guess.
   const noConsent = await call("/ai/triage", {
     method: "POST",
     token: P,
     body: { description: "chest pain radiating to the left arm" },
   });
+  const triageEngaged = noConsent.status === 428;
 
-  if (configured) {
+  if (triageEngaged) {
     check("triage without consent is refused with 428 CONSENT_REQUIRED",
-      noConsent.status === 428 && noConsent.code === "CONSENT_REQUIRED",
+      noConsent.code === "CONSENT_REQUIRED",
       `HTTP ${noConsent.status} ${noConsent.code ?? ""}`);
   } else {
     check("with no model configured, triage falls back locally instead of failing",

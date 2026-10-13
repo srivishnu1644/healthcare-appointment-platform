@@ -17,6 +17,7 @@
  *
  *   node scripts/admin-check.js
  */
+import "./local-db-guard.mjs"; // MUST stay first: applies the local-DB override.
 import { query, closePool } from "../src/config/database.js";
 import { hashPassword } from "../src/utils/password.js";
 

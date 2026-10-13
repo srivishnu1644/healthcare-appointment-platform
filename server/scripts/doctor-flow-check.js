@@ -38,6 +38,11 @@
  *   released. See the re-run notes in the README.
  */
 
+/* Local-DB guard. This suite speaks HTTP and opens no database connection
+   itself; the guard is here so that the rule is uniform across every suite
+   and so a future edit that adds a database query is protected automatically. */
+import "./local-db-guard.mjs";
+
 const BASE = process.env.API_URL || "http://localhost:5000/api";
 const TZ = process.env.APP_TIMEZONE || "Asia/Kolkata";
 const DOCTOR = { email: "doctor1@demo.com", password: "doctor123" };

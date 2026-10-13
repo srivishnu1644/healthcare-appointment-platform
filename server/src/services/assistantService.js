@@ -59,14 +59,27 @@ export const LIMITS = {
   maxQuestionLength: 1000,
   // A model that has not answered in this long has failed, and the caller should
   // not be left waiting.
-  timeoutMs: 8000,
+  //
+  // Was 8000ms. Measured against `gemini-3-flash-preview` with the real prompt,
+  // that budget was never met: 13.6s, 13.8s, 21.5s across three successful calls,
+  // so EVERY general-health question was aborting at 8s and falling back to the
+  // "not available" message. A model that reasons before answering is slower than
+  // one that does not, and the budget has to cover the reasoning.
+  //
+  // 30s leaves headroom over the observed worst case. It is configurable because
+  // it is a pure trade-off between waiting and giving up, and the right answer
+  // depends on the model and on how much latency your UI can absorb.
+  timeoutMs: Number(process.env.GEMINI_TIMEOUT_MS) || 30_000,
   // Never let a model's answer become an unbounded blob in the UI or the audit
   // table.
   maxAnswerLength: 2000,
 };
 
 const GEMINI_KEY = process.env.GEMINI_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+// `gemini-3-flash-preview`, matching aiService.
+// The previous default (`gemini-2.0-flash`) was retired by Google and answers 404.
+// Override with GEMINI_MODEL; `gemini-flash-latest` is a less volatile name.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-flash-preview";
 
 /**
  * Which backend answers questions the knowledge base does not cover.
@@ -147,7 +160,18 @@ const askModel = async (prompt) => {
             ],
           },
           contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.3, maxOutputTokens: 400 },
+          // maxOutputTokens is the TOTAL budget for everything the model emits,
+      // including tokens it spends reasoning before it answers.
+      //
+      // Was 400. Measured on `gemini-3-flash-preview`, thinking alone consumed
+      // 385-617 of them, so the actual answer got 11-130 tokens and arrived
+      // truncated (`finishReason: MAX_TOKENS`) - "A sprain is..." and then a stop.
+      // A user seeing a half sentence is worse off than one seeing nothing.
+      //
+      // 2000 leaves room for reasoning plus a full short answer, and
+      // maxAnswerLength still truncates whatever arrives, so the UI is bounded
+      // regardless of how generous this becomes.
+      generationConfig: { temperature: 0.3, maxOutputTokens: 2000 },
         }),
       },
     );

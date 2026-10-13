@@ -10,6 +10,11 @@
  * Requires a server on API_URL (default http://localhost:5000/api).
  * Exits non-zero if any check fails.
  */
+/* Local-DB guard. This suite speaks HTTP and opens no database connection
+   itself; the guard is here so that the rule is uniform across every suite
+   and so a future edit that adds a database query is protected automatically. */
+import "./local-db-guard.mjs";
+
 const BASE = process.env.API_URL || "http://localhost:5000/api";
 
 let pass = 0;

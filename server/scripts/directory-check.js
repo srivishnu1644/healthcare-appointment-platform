@@ -15,6 +15,7 @@
  *   * projections: no internal or security field reaches a public response
  *   * data quality: no SELECT *, and no database access outside repositories
  */
+import "./local-db-guard.mjs"; // MUST stay first: applies the local-DB override.
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";

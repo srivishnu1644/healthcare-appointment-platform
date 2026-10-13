@@ -33,6 +33,7 @@
  *   * transactions: rollback leaves nothing behind
  *   * concurrency: reported as UNVERIFIED here, with the reason
  */
+import "./local-db-guard.mjs"; // MUST stay first: applies the local-DB override.
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
