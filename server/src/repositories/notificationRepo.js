@@ -97,23 +97,81 @@ export const markOneRead = async (id, userId) => {
 };
 
 /**
+ * Mark one notification read, reporting whether this call was the one that did it.
+ *
+ * `markOneRead` above cannot distinguish "marked" from "already read" or "not
+ * yours", so the endpoint has no way to answer honestly. The ownership check is
+ * the same WHERE clause either way - this only adds the RETURNING that makes the
+ * outcome observable.
+ *
+ * @returns {Promise<boolean>} false when the id is not the caller's, or was
+ *        already read.
+ */
+export const markOneReadCounted = async (id, userId) => {
+  const r = await query(
+    `UPDATE notifications SET read_at = now()
+      WHERE id = $1 AND user_id = $2 AND read_at IS NULL
+      RETURNING id`,
+    [id, userId],
+  );
+  return (r.rowCount ?? 0) > 0;
+};
+
+/**
  * Create a notification and its delivery rows in one call.
  *
  * `withTx` lets the caller enlist this in the booking transaction, so a
  * crash cannot lose or duplicate the message.
  */
 export const create = async (
-  { id, userId, appointmentId = null, event, title, body, templateKey = null, deliveries = [] },
+  {
+    id,
+    userId,
+    appointmentId = null,
+    event,
+    title,
+    body,
+    templateKey = null,
+    dedupeKey = null,
+    deliveries = [],
+  },
   tx = null,
 ) => {
   const runner = tx ?? { query };
 
-  const r = await runner.query(
-    `INSERT INTO notifications (id, user_id, appointment_id, event, title, body, template_key)
-     VALUES (COALESCE($1, gen_random_uuid()::text), $2, $3, $4, $5, $6, $7)
-     RETURNING id`,
-    [id ?? null, userId, appointmentId, event, title, body, templateKey],
-  );
+  // A duplicate is handled by the database refusing the row, NOT by catching an
+  // exception. This matters more than it looks: this runs inside the transaction
+  // that booked the appointment, and in PostgreSQL a failed statement ABORTS the
+  // whole transaction - every later statement then fails with "current transaction
+  // is aborted", and the COMMIT rolls back the booking itself.
+  //
+  // So the retried request that a duplicate index is there to absorb would, on the
+  // old code, undo the very booking it was retrying. ON CONFLICT DO NOTHING
+  // never raises, so the transaction stays healthy and only the extra message is
+  // dropped.
+  //
+  // The index predicate is restated because it is a PARTIAL unique index;
+  // PostgreSQL needs it to infer which index is meant.
+  const r = dedupeKey
+    ? await runner.query(
+        `INSERT INTO notifications
+           (id, user_id, appointment_id, event, title, body, template_key, dedupe_key)
+         VALUES (COALESCE($1, gen_random_uuid()::text), $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING
+         RETURNING id`,
+        [id ?? null, userId, appointmentId, event, title, body, templateKey, dedupeKey],
+      )
+    : await runner.query(
+        `INSERT INTO notifications
+           (id, user_id, appointment_id, event, title, body, template_key, dedupe_key)
+         VALUES (COALESCE($1, gen_random_uuid()::text), $2, $3, $4, $5, $6, $7, $8)
+         RETURNING id`,
+        [id ?? null, userId, appointmentId, event, title, body, templateKey, dedupeKey],
+      );
+
+  // No row back means the dedupe index rejected it: this event already has a
+  // message. The caller treats that as "nothing to send", NOT as a failure.
+  if (!r.rows.length) return null;
   const notificationId = r.rows[0].id;
 
   for (const d of deliveries) {
@@ -236,6 +294,77 @@ export const outbox = {
   },
 
   /**
+   * Deliveries the drain should attempt now.
+   *
+   * Two different populations, deliberately in one query:
+   *   * never attempted (`attempted_at IS NULL`) - a message whose process died
+   *     between the commit and the send;
+   *   * attempted before the backoff window - a channel that was down, or a
+   *     transient provider error.
+   *
+   * A row attempted inside the window is left alone, so a provider that is down
+   * for an hour is contacted once per window rather than once per tick.
+   */
+  drainable: async (limit = 100, backoffMinutes = 5) =>
+    rows(
+      `SELECT d.id, d.notification_id, d.channel, d.destination, n.body, n.title
+         FROM notification_deliveries d
+         JOIN notifications n ON n.id = d.notification_id
+        WHERE d.status = 'queued'
+          AND (d.attempted_at IS NULL
+               OR d.attempted_at < now() - ($1 || ' minutes')::interval)
+        ORDER BY d.attempted_at NULLS FIRST, d.id
+        LIMIT $2`,
+      [String(backoffMinutes), Math.min(Number(limit) || 100, 500)],
+    ),
+
+  /** How many channels of this message are still queued. */
+  pendingFor: async (notificationId) =>
+    one(
+      `SELECT count(*)::int AS c FROM notification_deliveries
+        WHERE notification_id = $1 AND status = 'queued'`,
+      [notificationId],
+    ).c,
+
+  /** Mark the outbox markers for a notification done. */
+  markDoneFor: async (notificationId) =>
+    query(
+      `UPDATE notification_outbox
+          SET status = 'done', processed_at = now()
+        WHERE aggregate_id = $1 AND status <> 'done'`,
+      [notificationId],
+    ),
+
+  /**
+   * Give up on deliveries that have been attempted too many times.
+   *
+   * Without this, a permanently undeliverable channel is retried on every tick
+   * for ever, which is wasted work and a drain that can never report itself
+   * clean.
+   */
+  parkStale: async (maxAttempts = 5, withinHours = 24) => {
+    const r = await query(
+      `WITH stale AS (
+         SELECT d.id
+           FROM notification_deliveries d
+          WHERE d.status = 'queued'
+            AND d.attempted_at IS NOT NULL
+            AND d.attempted_at > now() - ($2 || ' hours')::interval
+            AND (SELECT count(*) FROM notification_deliveries x
+                  WHERE x.notification_id = d.notification_id
+                    AND x.attempted_at IS NOT NULL) >= $1
+       )
+       UPDATE notification_deliveries
+          SET status = 'failed',
+              error = COALESCE(error, 'abandoned after repeated attempts')
+        WHERE id IN (SELECT id FROM stale)
+       RETURNING id`,
+      [Number(maxAttempts), String(withinHours)],
+    );
+    return r.rowCount ?? 0;
+  },
+
+  /**
    * Mark an outbox row done, so a worker does not re-handle it.
    *
    * `WHERE status <> 'done'` keeps it idempotent if two workers race.
@@ -279,8 +408,38 @@ export const remindersDue = async (hours = 24) =>
        FROM appointments a
       WHERE a.status IN ('confirmed','scheduled')
         AND a.reminder_sent_at IS NULL
-        AND a.starts_at BETWEEN now() AND now() + ($1 || ' hours')::interval`,
+        AND a.starts_at BETWEEN now() AND now() + ($1 || ' hours')::interval
+      ORDER BY a.starts_at`,
     [String(hours)],
+  );
+
+/** Record one background pass. */
+export const createSweep = async ({
+  kind,
+  startedAt = null,
+  processed = 0,
+  skipped = 0,
+  failed = 0,
+  notes = null,
+}) => {
+  const r = await query(
+    `INSERT INTO notification_sweeps
+       (kind, started_at, finished_at, processed, skipped, failed, notes)
+     VALUES ($1, COALESCE($2, now()), now(), $3, $4, $5, $6)
+     RETURNING id`,
+    [kind, startedAt, Number(processed), Number(skipped), Number(failed), notes],
+  );
+  return r.rows[0].id;
+};
+
+/** Most recent passes, newest first, for the scheduler status endpoint. */
+export const recentSweeps = async (limit = 20) =>
+  rows(
+    `SELECT id, kind, started_at, finished_at, processed, skipped, failed, notes
+       FROM notification_sweeps
+      ORDER BY started_at DESC
+      LIMIT $1`,
+    [Math.min(Number(limit) || 20, 100)],
   );
 
 export default {
@@ -288,10 +447,13 @@ export default {
   unreadCount,
   markAllRead,
   markOneRead,
+  markOneReadCounted,
   create,
   recordDelivery,
   listAll,
   stats,
   outbox,
   remindersDue,
+  createSweep,
+  recentSweeps,
 };

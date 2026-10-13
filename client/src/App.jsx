@@ -22,6 +22,7 @@ const PatientDashboard = lazy(() => import("./pages/PatientDashboard.jsx"));
 const MyAppointments = lazy(() => import("./pages/MyAppointments.jsx"));
 const AppointmentDetail = lazy(() => import("./pages/AppointmentDetail.jsx"));
 const Notifications = lazy(() => import("./pages/Notifications.jsx"));
+const Assistant = lazy(() => import("./pages/Assistant.jsx"));
 const Profile = lazy(() => import("./pages/Profile.jsx"));
 
 const ProviderDashboard = lazy(() => import("./pages/ProviderDashboard.jsx"));
@@ -115,6 +116,11 @@ export default function App() {
           />
           <Route path="/doctors" element={<DoctorDirectory />} />
           <Route path="/doctors/:id" element={<DoctorProfile />} />
+
+          {/* Open to signed-out visitors: it only explains how the product works
+              and cannot see or do anything on an account. Asking a question
+              needs a session, which the page explains in place. */}
+          <Route path="/help" element={<Assistant />} />
 
           {/* ---------- patient ---------- */}
           <Route

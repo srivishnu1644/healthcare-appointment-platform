@@ -14,12 +14,14 @@ const NAV = {
     { to: "/doctors", label: "Find a doctor" },
     { to: "/appointments", label: "My appointments" },
     { to: "/notifications", label: "Notifications" },
+    { to: "/help", label: "Help" },
     { to: "/profile", label: "Profile" },
   ],
   doctor: [
     { to: "/provider", label: "My schedule" },
     { to: "/doctors", label: "Directory" },
     { to: "/notifications", label: "Notifications" },
+    { to: "/help", label: "Help" },
     { to: "/profile", label: "Profile" },
   ],
   admin: [

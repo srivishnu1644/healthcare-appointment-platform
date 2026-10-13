@@ -104,6 +104,43 @@ export function NotificationsProvider({ children }) {
     }
   }, [load]);
 
+  const [marking, setMarking] = useState(null);
+
+  /**
+   * Mark ONE notification read.
+   *
+   * Optimistic like markAllRead, for the same reason: the header badge reads the
+   * same state, so waiting for a round trip would leave the number visibly stale
+   * while the row claimed to have been actioned. On failure the whole list is
+   * re-read, so the UI cannot drift away from the database.
+   *
+   * `marking` holds the id in flight rather than a boolean, so one row can show
+   * a spinner without every row doing so.
+   */
+  const markOne = useCallback(
+    async (id) => {
+      if (!id || marking === id) return;
+      const before = data;
+      setMarking(id);
+      setData((prev) => ({
+        ...prev,
+        unread: Math.max(0, (prev.unread || 1) - 1),
+        notifications: prev.notifications.map((n) =>
+          n.id === id ? { ...n, read: true, readAt: n.readAt ?? new Date().toISOString() } : n,
+        ),
+      }));
+      try {
+        await api.markNotificationRead(id);
+      } catch (err) {
+        setData(before);
+        setError(err?.message || "Could not mark that notification read");
+      } finally {
+        setMarking(null);
+      }
+    },
+    [data, marking],
+  );
+
   const value = useMemo(
     () => ({
       notifications: data.notifications || [],
@@ -113,6 +150,8 @@ export function NotificationsProvider({ children }) {
       error,
       reload: load,
       markAllRead,
+      markOne,
+      marking,
     }),
     [data, loading, error, load, markAllRead],
   );

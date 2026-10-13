@@ -1,6 +1,7 @@
 import app from "./src/app.js";
 import logger from "./src/utils/logger.js";
 import { healthCheck, closePool } from "./src/config/database.js";
+import { startScheduler, stopScheduler } from "./src/services/scheduler.js";
 
 const log = logger.tag("server");
 const PORT = Number(process.env.PORT) || 5000;
@@ -62,6 +63,10 @@ const preflight = async (attempts = 5) => {
 const start = async () => {
   if (!(await preflight())) process.exit(1);
 
+  // Only after the preflight passes: a timer started against a database it cannot
+  // reach would mark every pass as failing for no reason.
+  startScheduler();
+
   const server = app.listen(PORT, () => {
     log.info(`API listening on http://localhost:${PORT}`);
     log.info(`Health check: http://localhost:${PORT}/api/health`);
@@ -69,6 +74,8 @@ const start = async () => {
 
   const shutdown = async (signal) => {
     log.info(`${signal} received, shutting down`);
+    // Stop the timer first, so a pass cannot start while the pool is closing.
+    stopScheduler();
     server.close(async () => {
       await closePool();
       process.exit(0);

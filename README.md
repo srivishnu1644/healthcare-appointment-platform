@@ -84,6 +84,8 @@ server transforms JSX for `checks.html`.
 | `npm --prefix server run test:appointments` | Booking, conflicts, lifecycle, check-in |
 | `npm --prefix server run test:queue` | Queue positions, ordering, authorization |
 | `npm --prefix server run test:room` | The Phase 9 waiting room, deterministically |
+| `npm --prefix server run test:notifications` | Every event, duplicates, privacy, reminders |
+| `npm --prefix server run test:assistant` | Capabilities, injection, limits, no credentials |
 | `npm --prefix server run test:flow` | One patient's visit, end to end, from the doctor |
 | `npm --prefix server run test:schema` | Migrations are applied and consistent |
 | `npm --prefix server run test:all` | Schema, queue and appointment suites |
@@ -294,17 +296,195 @@ idempotent while a consultation is active.
 | Method | Path        | Access    |
 | ------ | ----------- | --------- |
 | GET    | `/provider` | public    |
+| GET    | `/assist`   | public    |
 | POST   | `/triage`   | signed-in |
+| POST   | `/assist`   | signed-in, rate limited |
+
+`GET /assist` describes the assistant before anyone asks it anything: its limits,
+suggested questions, whether a model is configured, and what it will not do. It
+discloses nothing about the caller, so it needs no token.
+
+`POST /triage` takes `{ description, ... , consent }`. `consent` is required only
+when an AI model is configured; without it the call is refused with 428 and
+nothing is transmitted.
+
+`POST /assist` takes `{ question }`. The response always states its own
+provenance — `sourcedFrom` (`knowledge-base` or `model`), `generatedByModel`, and
+`provider` — so a client can label AI text honestly instead of assuming.
 
 ### Notifications — `/api/notifications`
 
-`GET /` · `PATCH /read-all` (user) · `POST /reminders/sweep` (admin)
+`GET /` · `PATCH /read-all` · `PATCH /:id/read` (user) ·
+`POST /reminders/sweep` · `POST /outbox/drain` · `GET /scheduler` (admin)
+
+`PATCH /:id/read` answers 404 for a notification that does not exist **and** for
+one belonging to somebody else, so the response cannot be used to discover which
+ids are real.
 
 ### Admin — `/api/admin`
 
 `GET /overview` · `GET /doctors` · `PATCH /doctors/:id` · `GET /facilities` ·
 `POST /facilities` · `GET /services` · `GET /patients` · `GET /notifications`
 — all admin-only.
+
+---
+
+## Notifications (Phase 10)
+
+### What fires, and when
+
+| Event | Sent to | Triggered by |
+| --- | --- | --- |
+| `appointment_booked` | patient | a booking committing |
+| `appointment_rescheduled` | patient | a reschedule committing |
+| `appointment_cancelled` | patient | a cancellation committing |
+| `appointment_checked_in` | patient | a first arrival joining the room |
+| `queue_called` | patient | the doctor calling the next patient |
+| `appointment_completed` | patient | a visit finishing |
+| `appointment_reminder` | patient | the reminder sweep |
+| `status_update` | patient | any other status change |
+
+The message is written **inside the transaction that caused it**, so a crash
+cannot leave a patient booked with no confirmation, or checked in with nobody
+telling them. Delivery happens only after that transaction commits.
+
+### Duplicate suppression
+
+`notifications.dedupe_key` carries a **partial unique index**, so two concurrent
+transactions cannot both write the same logical event: the second violates the
+index and is discarded. This is deliberately in the database rather than a
+"have I sent this?" check above it — two concurrent transactions both read "not
+yet", both insert, and both commit. A check is not atomic; the index is.
+
+The key includes whatever distinguishes two *genuine* occurrences:
+
+- a reschedule is keyed by its destination slot, so moving an appointment twice
+  produces two messages;
+- a reminder is keyed by the appointment's start time, so a rescheduled visit is
+  reminded about again;
+- a queue call is keyed by when the patient was called, so being called, marked
+  no-show and called again produces two messages — while one promotion retried
+  three times produces one.
+
+A notification with **no** key is never deduplicated, so operator-driven messages
+still work.
+
+### Reminders, and what the timer does not promise
+
+Reminders run from an in-process timer every `NOTIFICATION_SWEEP_MINUTES`
+(default 15). The honest limitations:
+
+- **Timing is approximate.** A reminder is delivered within one interval of
+  becoming due — at most about 15 minutes late, never early. Nothing promises
+  "exactly 24 hours before", because nothing here can.
+- **It stops when the API stops.** The set of due appointments is derived from
+  the database (`reminder_sent_at IS NULL`), not from anything the timer holds in
+  memory, so a reminder that came due during downtime is sent at the next pass
+  rather than lost.
+- **It assumes one process.** Two API instances would each run a pass. They would
+  not send duplicates — `claimReminder` is a guarded `UPDATE ... WHERE
+  reminder_sent_at IS NULL RETURNING`, so only one caller wins each row — but the
+  loser would waste work.
+- **It is disabled with `DISABLE_SCHEDULER=1`**, which is how the test suites run,
+  so they control exactly when messages appear. The notification suite asserts
+  this, so a suite cannot silently start running against a live timer.
+- **There is no exactly-once guarantee for EXTERNAL delivery.** The in-app message
+  is written in the same transaction as the change that caused it, so it is
+  exactly-once by construction. An SMS or email is different: it is attempted
+  after that commit, and a provider that accepts a message and then fails before
+  the result is recorded will be retried, which can deliver twice. The outbox is
+  at-least-once for external channels and exactly-once for in-app. Deduplication
+  is on *notification creation*, not on *provider delivery*, and those are
+  different problems.
+
+A reschedule clears `reminder_sent_at`. Without that, moving an appointment into
+next week would leave it permanently un-reminded.
+
+### The outbox
+
+`notification_outbox` has been written since Phase 1 and never drained. It now is:
+a background pass attempts every delivery still in `queued`, with a five-minute
+backoff, and abandons anything attempted five times in a day rather than
+retrying it for ever. Each pass records what it did in `notification_sweeps`, so
+"is the timer alive?" is answerable and a failing pass is visible rather than
+silent.
+
+---
+
+## The assistant (Phase 11)
+
+### What it is
+
+A limited help assistant for **how MediCare works** plus **general healthcare
+information**. Open at `/help`; it needs a session to ask a question, but reading
+it does not.
+
+Four of the five capability groups — booking, rescheduling, cancelling, checking
+in — plus queue terminology and navigation, are answered from
+`server/src/services/assistantKnowledge.js`. Those answers are about *this
+application's* policies, and a model improvising "you can cancel up to two hours
+before" would be inventing one. The model is consulted for exactly one class of
+question: general healthcare information, where this codebase has no right answer.
+
+### The security properties, and where each one lives
+
+1. **The key never leaves the server.** Read from the environment, used in a
+   server-to-server call, never logged and never returned.
+2. **Nothing private is sent, by default.** `buildModelPrompt` takes the question
+   and nothing else — no user id, name, role, appointment, doctor or queue
+   position. That is checkable by reading one function signature rather than by
+   auditing every query.
+3. **The model cannot act.** It returns a string. There is no tool registry, no
+   function calling, and no code path from model output to a database write.
+4. **Model output is never authorisation.** Booking, cancelling and queue changes
+   go through the existing controllers. If the assistant says a patient may
+   cancel, that sentence changes nothing.
+5. **Injection is handled at the application boundary.** Telling a model not to
+   be injected is a request, not a control. The application classifies the
+   question *before* any model is consulted: known topics are answered locally,
+   and anything matching an injection pattern is refused outright. The model is
+   only reached for a question that matched nothing else. The prompt also strips
+   control characters and angle brackets, so a forged `<question>` delimiter
+   cannot close the block early.
+6. **Without credentials it still works.** Every application question is
+   answered, general questions get an honest "not available right now", and the
+   response reports `generatedByModel: false` — the UI never dresses an
+   application's own answer up as AI output.
+
+### Known behaviour to be aware of
+
+- **`/ai/triage` sends the patient's description to Gemini, and now asks first.**
+  When a model is configured, the first press of "Analyse my symptoms" does not
+  transmit: it shows exactly what would be sent (the description, and the age if
+  given) and who would receive it, and only the second press sends anything. The
+  server enforces the same rule — `analyzeSymptoms` refuses with
+  **428 CONSENT_REQUIRED** when consent is absent and a key is configured — so the
+  gate cannot be bypassed by another client. It lives in the service rather than
+  the route so that a second caller cannot skip it.
+  With no key configured the engine is entirely local and rule-based, nothing
+  leaves the machine, and the extra step is skipped.
+  What triage sends: the description, plus age/gender/history supplied on that
+  form. Never a name, account, appointment, queue state or record — the function
+  is not given them and cannot read them. This is asserted by inspecting the
+  prompt it builds, not by reading the UI.
+- **Answers are labelled, not moderated.** A model's general-health answer is
+  marked `AI-generated · not medical advice` and sits under a permanent
+  disclaimer, but nothing filters its medical content. It is guidance, not
+  review.
+- **Duplicate suppression is on notification CREATION, not on provider delivery.**
+  In-app delivery is exactly-once by construction, because the message commits
+  with the change that caused it. External channels are at-least-once: a provider
+  that accepts a message and then fails before the result is recorded will be
+  retried, and can deliver twice. Retries are bounded by a five-minute backoff and
+  a five-attempts-per-day abandonment, so a broken provider cannot become an
+  unbounded retry loop.
+- **A duplicate notification cannot undo the booking that caused it.** This needed
+  fixing and is worth recording why. Deduplication is enforced by a unique index,
+  and a failed statement ABORTS a PostgreSQL transaction — so handling the
+  collision by catching the exception left the transaction poisoned and the
+  booking rolled back on COMMIT, despite the code appearing to continue. The
+  insert now uses `ON CONFLICT DO NOTHING` and returns null, so nothing raises
+  and the transaction stays healthy.
 
 ---
 

@@ -1,6 +1,7 @@
 import notificationRepo from "../repositories/notificationRepo.js";
 import { sendSuccess, AppError, asyncHandler } from "../utils/responses.js";
-import { runReminderSweep } from "../services/notificationService.js";
+import { runReminderSweep, drainOutbox } from "../services/notificationService.js";
+import { schedulerState } from "../services/scheduler.js";
 import logger from "../utils/logger.js";
 
 const log = logger.tag("notify-ctrl");
@@ -80,3 +81,36 @@ export const sweep = asyncHandler(async (req, res) => {
     "Reminder sweep complete",
   );
 });
+
+/* ------------------------------------------------------------------ *
+ *  PATCH /api/notifications/:id/read                                  *
+ * ------------------------------------------------------------------ */
+export const markOne = asyncHandler(async (req, res) => {
+  // The caller's id is part of the UPDATE's WHERE rather than being checked
+  // afterwards, so one caller can never mark another's notification read - not by
+  // guessing an id, and not by reading one out of a log.
+  const updated = await notificationRepo.markOneReadCounted(req.params.id, req.user.id);
+  if (!updated) {
+    // The same 404 whether the id does not exist or simply belongs to somebody
+    // else. Telling them apart would confirm that an id is real.
+    throw new AppError("Notification not found", 404, "NOT_FOUND");
+  }
+  return sendSuccess(res, { ok: true, id: req.params.id }, "Marked as read");
+});
+
+/* ------------------------------------------------------------------ *
+ *  POST /api/notifications/outbox/drain        (admin)                *
+ * ------------------------------------------------------------------ */
+export const drain = asyncHandler(async (req, res) => {
+  const limit = Number(req.body?.limit) || 100;
+  const summary = await drainOutbox({ limit });
+  log.info(`manual outbox drain: ${JSON.stringify(summary)}`);
+  return sendSuccess(res, summary, "Outbox drain complete");
+});
+
+/* ------------------------------------------------------------------ *
+ *  GET /api/notifications/scheduler           (admin)                *
+ * ------------------------------------------------------------------ */
+export const scheduler = asyncHandler(async (_req, res) =>
+  sendSuccess(res, await schedulerState()),
+);

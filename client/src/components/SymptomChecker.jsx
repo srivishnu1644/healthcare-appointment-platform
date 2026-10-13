@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "../api/client";
 import { Alert, Avatar, Spinner, StatusBadge } from "./ui.jsx";
@@ -10,6 +10,22 @@ import { useToast } from "../context/ToastContext.jsx";
  * Uses POST /api/ai/triage which returns:
  *   urgency, departments[], summary, followUpQuestions[], redFlags[],
  *   advice, recommendedDoctorIds[], provider
+ *
+ * WHY THIS ASKS TWICE
+ * -------------------
+ * When the API has an AI model configured, the description a patient types is sent
+ * to that model - a third party, outside this application. That was happening on
+ * a single click with nothing on screen saying so, which is not consent and is
+ * not informed either.
+ *
+ * So the first press stops and shows exactly what would be sent and who would
+ * receive it; only the second press transmits anything. The server enforces this
+ * too: `/ai/triage` refuses with CONSENT_REQUIRED when consent is absent and a
+ * model is configured, so the rule cannot be bypassed by another client.
+ *
+ * When no model is configured the whole engine is local and rule-based, nothing
+ * leaves the machine, and the extra step is skipped - asking to consent to a
+ * disclosure that is not happening would be noise.
  */
 export default function SymptomChecker() {
   const toast = useToast();
@@ -19,19 +35,19 @@ export default function SymptomChecker() {
   const [doctors, setDoctors] = useState([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  // Set after the first press, when an external model is in play.
+  const [confirming, setConfirming] = useState(false);
+  const [sendsRemotely, setSendsRemotely] = useState(false);
 
-  const submit = async (e) => {
-    e.preventDefault();
-    if (text.trim().length < 3) {
-      setError("Please describe your symptoms in a few more words.");
-      return;
-    }
+  const runTriage = async (consent) => {
     setBusy(true);
     setError(null);
     try {
       const res = await api.triage({
         description: text.trim(),
         ...(age ? { age: Number(age) } : {}),
+        // Sent either way; the server only requires it when a model is configured.
+        consent,
       });
       setResult(res);
 
@@ -54,14 +70,50 @@ export default function SymptomChecker() {
       toast.error(err.message);
     } finally {
       setBusy(false);
+      setConfirming(false);
     }
+  };
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (text.trim().length < 3) {
+      setError("Please describe your symptoms in a few more words.");
+      return;
+    }
+    // Ask first, transmit second - and only when something would actually be sent
+    // somewhere else.
+    if (!confirming && sendsRemotely) {
+      setConfirming(true);
+      return;
+    }
+    await runTriage(true);
   };
 
   const reset = () => {
     setResult(null);
     setDoctors([]);
     setText("");
+    setConfirming(false);
+    setError(null);
   };
+
+  // Whether an external model is configured, so the disclosure can be shown only
+  // when it is true. Falls back to showing it, because under-disclosing is the
+  // worse failure.
+  useEffect(() => {
+    let live = true;
+    api
+      .aiProvider()
+      .then((p) => {
+        if (live) setSendsRemotely(p?.isLive === true);
+      })
+      .catch(() => {
+        if (live) setSendsRemotely(true);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   const urgencyTone =
     {
@@ -93,6 +145,46 @@ export default function SymptomChecker() {
         {!result && (
           <>
             {error && <Alert tone="danger">{error}</Alert>}
+
+            {/* The disclosure is stated before the box, not after the result. */}
+            {sendsRemotely && (
+              <Alert tone="info" title="Before you submit">
+                <span className="small">
+                  If you submit this, the description you write - and the age, if
+                  you give one - will be sent to Google&apos;s Gemini AI service so
+                  it can suggest a department. Your name, account, appointments
+                  and medical records are never included.
+                </span>
+              </Alert>
+            )}
+
+            {confirming && (
+              <Alert tone="warning" title="Send this to an AI service?">
+                <span className="small">
+                  Your description will leave MediCare and be processed by
+                  Google. You can type something less specific instead, or go
+                  back and edit it.
+                </span>
+                <div className="row" style={{ gap: "0.5rem", marginTop: "0.5rem" }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => setConfirming(false)}
+                    disabled={busy}
+                  >
+                    Go back and edit
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn btn-primary btn-sm"
+                    disabled={busy}
+                  >
+                    {busy ? <Spinner /> : "Yes, send it"}
+                  </button>
+                </div>
+              </Alert>
+            )}
+
             <form onSubmit={submit} className="stack">
               <div className="field">
                 <label className="label" htmlFor="symptoms">
@@ -126,14 +218,20 @@ export default function SymptomChecker() {
                     onChange={(e) => setAge(e.target.value)}
                   />
                 </div>
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={busy}
-                  style={{ flex: 1 }}
-                >
-                  {busy ? <Spinner /> : "Analyse my symptoms"}
-                </button>
+                {/* While confirming, the choice lives in the confirmation panel
+                    above; a second identical button here would invite a click
+                    that skips it. */}
+                {!confirming && (
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                    disabled={busy}
+                    style={{ flex: 1 }}
+                  >
+                    {busy ? <Spinner /> : "Analyse my symptoms"}
+                  </button>
+                )}
+                {confirming && <div style={{ flex: 1 }} />}
               </div>
             </form>
 

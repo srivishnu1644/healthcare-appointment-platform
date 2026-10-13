@@ -44,6 +44,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFile } from "node:fs/promises";
 
+import { hashPassword } from "../src/utils/password.js";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 
@@ -54,6 +56,8 @@ const BASE =
   (SPAWN_SERVER ? `http://localhost:${PORT}/api` : "http://localhost:5000/api");
 
 const ADMIN = { email: "admin@demo.com", password: "admin123" };
+/** Identifies this run's fixture rows, so cleanup can assert on exactly them. */
+const RUN_TAG = `${Date.now()}${Math.floor(Math.random() * 1e4)}`;
 const DOCTOR = { email: "doctor1@demo.com", password: "doctor123" };
 const OTHER_DOCTOR = { email: "doctor2@demo.com", password: "doctor123" };
 /** Seeded patients; all three share one password. */
@@ -317,6 +321,146 @@ async function findSoonestFreeStart(needed, budgetMs) {
 }
 
 /**
+ * A deterministic check-in-able fixture that never waits.
+ *
+ * The fallback below asks the SEEDED calendar when two providers happen to be
+ * free together, and sleeps until that moment arrives. Two problems: it depends on
+ * seed data it does not control, and it burns real minutes of wall clock. At some
+ * hours no such window exists inside the budget and the whole section skips -
+ * which is what happened, and which meant a real capability went unverified.
+ *
+ * So this builds the situation instead of waiting for it: a provider created for
+ * this run, with two slots that STARTED half an hour and an hour ago. Check-in
+ * requires a started slot, so both patients can check in immediately, with no
+ * sleep and no reference to anything the seed laid down.
+ *
+ * Still goes through the real booking and check-in endpoints. Only the provider
+ * and its slots are written directly, because there is no API for creating a
+ * provider with a login, and the slots have to sit in the past - which the
+ * calendar API will not create for a date that has passed.
+ *
+ * The provider is removed on the way out, so repeated runs do not accumulate.
+ */
+async function buildImmediateQueue(adminSession, db) {
+  if (!db) return { subjects: null, reason: "no local database connection for the fixture" };
+  const stamp = RUN_TAG;
+
+  const specialty = await db.query("SELECT id FROM specialties ORDER BY slug LIMIT 1");
+  const facility = await db.query("SELECT id FROM facilities ORDER BY name LIMIT 1");
+  if (!specialty.rows.length || !facility.rows.length) {
+    return { subjects: null, reason: "no specialty or facility to build a provider from" };
+  }
+
+  const subjects = [];
+  const doctorIds = [];
+  try {
+    // ONE PROVIDER PER PATIENT, not one provider for both.
+    //
+    // This matters: a waiting room is one provider for one clinic day, so two
+    // patients on the same provider share one room and only the first is #1. The
+    // checks below assert each subject is first in ITS OWN list, which is the
+    // scenario the seeded fallback produced by picking two different providers.
+    // One provider would silently change what is being tested.
+    for (const [index, minutesAgo] of [60, 30].entries()) {
+      const email = `queue-provider${index}-${stamp}@phase7.test`;
+
+      // The provider is never signed into. The hash is a real bcrypt string only
+      // because the schema requires one - it is the hash of a random value this
+      // run discards, so nobody can authenticate as the fixture provider.
+      const unusable = await hashPassword(
+        `queue-fixture-unusable-${stamp}-${index}-${Math.floor(Math.random() * 1e12)}`,
+      );
+      const user = await db.query(
+        `INSERT INTO users (email, password_hash, role, full_name, phone)
+         VALUES ($1, $2, 'doctor', $3, $4) RETURNING id`,
+        [email, unusable, `Dr. Queue Fixture ${stamp.slice(-6)}`, `+9191${stamp.slice(-9)}`],
+      );
+      const doctor = await db.query(
+        `INSERT INTO doctors (user_id, specialty_id, facility_id, consultation_fee,
+                              experience_years, seed_rating, seed_review_count)
+         VALUES ($1, $2, $3, 400, 5, 4.5, 5) RETURNING id`,
+        [user.rows[0].id, specialty.rows[0].id, facility.rows[0].id],
+      );
+      const doctorId = doctor.rows[0].id;
+      doctorIds.push(doctorId);
+
+      const at = new Date(Date.now() - minutesAgo * 60_000);
+      const created = await call(`/doctors/${doctorId}/slots`, {
+        method: "POST",
+        token: adminSession.token,
+        body: {
+          date: businessDate(at),
+          times: [businessTime(at)],
+          duration: DURATION_MIN,
+          mode: "in-person",
+          fee: 400,
+          maxQueue: 3,
+        },
+      });
+      const slotId = created.data?.created?.[0]?.id ?? null;
+      if (!slotId) {
+        return { subjects: null, reason: `the fixture slot was not created (${created.status})` };
+      }
+
+      const tag = `imm${index}${minutesAgo}${stamp.slice(-4)}`;
+      const patient = await fixturePatient(tag);
+      const booked = await call("/appointments", {
+        method: "POST",
+        token: patient.token,
+        body: { doctorId, slotId, reason: "queue-check" },
+      });
+      if (booked.status !== 201) {
+        return { subjects: null, reason: `the fixture booking was refused (${booked.status})` };
+      }
+      subjects.push({
+        label: tag,
+        email: patient.email,
+        password: patient.password,
+        appointment: booked.data.appointment,
+      });
+    }
+  } catch (err) {
+    return { subjects: null, reason: `the immediate fixture failed: ${err.message}` };
+  }
+
+  console.log(
+    `      fixture providers with slots that started 60 and 30 minutes ago; nothing to wait for`,
+  );
+  return { subjects, reason: null, doctorIds };
+}
+
+/**
+ * Remove the providers buildImmediateQueue created.
+ *
+ * Appointments first, then the doctor, then the user. `appointments.doctor_id` is
+ * a foreign key, so deleting the provider first leaves the appointment behind and
+ * the delete simply fails - which is what an earlier version of this did.
+ */
+async function dropImmediateProviders(db, doctorIds = []) {
+  if (!db || !doctorIds.length) return;
+  // The owning user ids are captured FIRST. An earlier version deleted the doctors
+  // and then looked their user ids up from the doctors table - which was already
+  // empty, so no user was ever removed and every run left an orphaned account
+  // behind. The provider rows went; the people did not.
+  const owners = await db
+    .query(`SELECT user_id FROM doctors WHERE id = ANY($1::text[])`, [doctorIds])
+    .catch(() => ({ rows: [] }));
+  const userIds = owners.rows.map((r) => r.user_id).filter(Boolean);
+
+  await db
+    .query(`DELETE FROM appointments WHERE doctor_id = ANY($1::text[])`, [doctorIds])
+    .catch(() => {});
+  await db
+    .query(`DELETE FROM doctors WHERE id = ANY($1::text[])`, [doctorIds])
+    .catch(() => {});
+  if (userIds.length) {
+    await db
+      .query(`DELETE FROM users WHERE id = ANY($1::text[])`, [userIds])
+      .catch(() => {});
+  }
+}
+
+/**
  * Build a check-in-able appointment when the seed happens to leave none.
  *
  * A queue entry only exists for a slot that has already started, and the seed
@@ -515,11 +659,23 @@ const run = async () => {
   // A fresh seed leaves every started appointment in a terminal state, so fall
   // back to opening a slot and waiting for it rather than skipping outright.
   let fallbackReason = null;
+  let fixtureDoctorIds = [];
   if (subjects.length === 0) {
-    console.log("      no seeded appointment is check-in-able; opening a fixture slot instead");
-    const built = await buildFallbackQueue(adminSession);
-    if (built.subjects) subjects.push(...built.subjects);
-    else fallbackReason = built.reason;
+    console.log("      no seeded appointment is check-in-able; building a fixture instead");
+    // Deterministic first: its own provider, slots that already started, no wait.
+    // The seeded-calendar fallback stays behind it as a second resort, so losing
+    // the deterministic path degrades to slower rather than to a skip.
+    const db = await openLocalDb();
+    const immediate = await buildImmediateQueue(adminSession, db);
+    if (immediate.subjects) {
+      subjects.push(...immediate.subjects);
+      fixtureDoctorIds = immediate.doctorIds ?? [];
+    } else {
+      console.log(`      (${immediate.reason}); falling back to a seeded window`);
+      const built = await buildFallbackQueue(adminSession);
+      if (built.subjects) subjects.push(...built.subjects);
+      else fallbackReason = built.reason;
+    }
   }
 
   if (subjects.length === 0) {
@@ -746,6 +902,30 @@ const run = async () => {
         "the fixtures are restored to their seeded status",
         statuses.every((x) => x === "confirmed"),
         JSON.stringify(statuses),
+      );
+    }
+
+    // A provider this run invented would otherwise sit in the directory for good,
+    // and the next run would find one more of them.
+    if (fixtureDoctorIds.length) {
+      const cleanupDb = await openLocalDb();
+      await dropImmediateProviders(cleanupDb, fixtureDoctorIds);
+      // Both halves. Deleting the doctor while leaving its user behind is a
+      // silent leak: the row no longer appears anywhere the app looks, so nothing
+      // else would ever notice it accumulating.
+      const remaining = cleanupDb
+        ? await cleanupDb.query(
+            `SELECT
+               (SELECT count(*)::int FROM doctors WHERE id = ANY($1::text[])) AS doctors,
+               (SELECT count(*)::int FROM users u
+                 WHERE u.email LIKE 'queue-provider%-${RUN_TAG}@phase7.test') AS users`,
+            [fixtureDoctorIds],
+          )
+        : { rows: [{ doctors: -1, users: -1 }] };
+      check(
+        "the fixture providers this run created are removed, accounts included",
+        remaining.rows[0].doctors === 0 && remaining.rows[0].users === 0,
+        `doctors left=${remaining.rows[0].doctors} orphaned users left=${remaining.rows[0].users}`,
       );
     }
   }

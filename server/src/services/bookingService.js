@@ -648,7 +648,10 @@ export const changeStatus = async ({
     const doctor = await doctorRepo.findById(appointment.doctor_id, tx);
     const facility = await facilities.findById(updated.facilityId, tx);
     const queued = await enqueueNotifications({
-      event: "status_update",
+      // A completed visit gets its own template rather than the generic status
+      // line: "your appointment is now completed" is a database fact, while
+      // "your visit is complete" is the thing a patient is actually told.
+      event: nextStatus === "completed" ? "appointment_completed" : "status_update",
       appointment: updated,
       doctor,
       facility,

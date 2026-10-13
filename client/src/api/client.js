@@ -307,12 +307,20 @@ export const api = {
   notifications: () => request("/notifications"),
   markNotificationsRead: () =>
     request("/notifications/read-all", { method: "PATCH" }),
+  markNotificationRead: (id) =>
+    request(`/notifications/${id}/read`, { method: "PATCH" }),
   runReminderSweep: () =>
     request("/notifications/reminders/sweep", { method: "POST" }),
 
   // --- ai ---
   triage: (payload) => request("/ai/triage", { method: "POST", body: payload }),
   aiProvider: () => request("/ai/provider", { auth: false }),
+  // The assistant. `info` is public - it describes limits and suggestions and
+  // discloses nothing about the caller - so it is fetched without a token, which
+  // means the page can render its shell before sign-in state has settled.
+  assistantInfo: () => request("/ai/assist", { auth: false }),
+  assistantAsk: (question) =>
+    request("/ai/assist", { method: "POST", body: { question } }),
 
   // --- admin ---
   adminOverview: () => request("/admin/overview"),

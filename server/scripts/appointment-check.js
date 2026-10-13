@@ -529,11 +529,28 @@ const buildFixtures = async () => {
     // constraint and make the result depend on the seeded data rather than on the
     // rule under test.
     const checkinHash = raceHash;
-    // Five, not three: 0 and 1 take the patient-overlap fixture, 2 takes the
-    // re-pricing fixture, and 3 and 4 take the queue/capacity fixtures. Each
-    // section needs patients the others have not booked, because every fixture
-    // is placed at a controlled instant around "now".
-    for (let i = 0; i < 5; i += 1) {
+    // Eight, and each account is used by exactly ONE section.
+    //
+    // The bug this fixes: indices 0, 1 and 2 were handed to the check-in section
+    // for its future/now/past fixtures, having ALREADY been used by the
+    // patient-overlap section (0 and 1) and the re-pricing section (2). Both of
+    // those book a real appointment and never cancel it. Since every check-in
+    // fixture is placed at an offset from `now()`, whether the earlier
+    // appointment overlapped the later one depended on the hour the suite ran:
+    //
+    //   11:00-12:00 IST  now+2h lands inside the 13:00 overlap window  -> checkin01
+    //   14:00-15:00 IST  now-3h lands inside the 13:00 overlap window  -> checkin02
+    //
+    // so the suite failed at a different assertion depending on the time of day,
+    // with PATIENT_CLASH - a collision between two fixtures, never the rule under
+    // test.
+    //
+    // The allocation is therefore exclusive:
+    //   0, 1  patient-overlap section
+    //   2     re-pricing section
+    //   3, 4  queue and capacity section
+    //   5, 6, 7  check-in section (future, now, past)
+    for (let i = 0; i < 8; i += 1) {
       const email = `checkin${String(i + 1).padStart(2, "0")}-${RUN_ID}@phase6.test`;
       await db.query(
         `INSERT INTO users (email, password_hash, role, full_name, phone)
@@ -1275,8 +1292,11 @@ const queueChecks = async () => {
   // and the booking was refused with PATIENT_CLASH - a collision between two
   // fixtures, not the rule under test. Patients 3 and 4 exist for this section
   // alone and are used nowhere else.
+  // Indices 5, 6 and 7 are reserved for this section alone. Using 0, 1 and 2 here
+  // reused patients that the overlap and re-pricing sections had already booked,
+  // which made the result depend on the hour. See the fixture allocation note.
   fx.checkinTokens = [];
-  for (const email of (fx.checkinEmails ?? []).slice(0, 5)) {
+  for (const email of (fx.checkinEmails ?? []).slice(0, 8)) {
     const r = await call("/auth/login", { method: "POST", body: { email, password: "race123" } });
     fx.checkinTokens.push(r.data?.token ?? null);
   }
@@ -1284,6 +1304,39 @@ const queueChecks = async () => {
   const qSecond = fx.checkinTokens[4];
   check("appointment-free fixture patients are available for the queue checks",
     Boolean(qFirst && qSecond));
+
+  // Every fixture patient must start this section with nothing booked, because
+  // each fixture below sits at an offset from `now()` and the patient-overlap
+  // fixture occupies a fixed 13:00-14:00 window. A patient carrying an
+  // appointment from another section therefore collides or not depending on the
+  // hour the suite runs - which is exactly the bug this guard now prevents.
+  // A short-lived connection of its own: this function has no pool handle, and
+  // borrowing one would couple an assertion to how the suite is wired.
+  const probe = new pg.Client({ connectionString: process.env.DATABASE_URL });
+  await probe.connect();
+  const reserved = await probe.query(
+    `SELECT u.email, count(a.id)::int AS booked
+       FROM users u
+       LEFT JOIN appointments a
+         ON a.patient_id = u.id
+        AND a.status IN ('scheduled','confirmed','in-progress')
+      WHERE u.email LIKE 'checkin%-${RUN_ID}@phase6.test'
+      GROUP BY u.email
+      ORDER BY u.email`,
+  );
+  // Indices 3-7 serve the queue and check-in sections, which is where the
+  // collision actually happened. Indices 0-2 are booked ON PURPOSE by the
+  // overlap and re-pricing sections - that is those sections' whole job - so
+  // they are excluded rather than asserted to be free.
+  const mustBeFree = reserved.rows.slice(3);
+  const notFree = mustBeFree.filter((r) => r.booked > 0);
+  check(
+    "no earlier section has already booked the queue or check-in fixture patients",
+    mustBeFree.length === 5 && notFree.length === 0,
+    `${mustBeFree.length - notFree.length} of ${mustBeFree.length} free; carrying appointments: ${
+      notFree.map((r) => `${r.email}(${r.booked})`).join(",") || "none"
+    }`,
+  );
 
   // Capacity 1: first patient in, second refused.
   const a1 = await bookWith(qFirst, fx.doctorCapacity, fx.capacitySlot);
@@ -1326,7 +1379,7 @@ const queueChecks = async () => {
   /* ---- the documented rule: refuse until the slot has STARTED ---- */
 
   // A slot later today (or later still, only when the day has no room left).
-  const futureAppt = await bookWith(fx.checkinTokens[0], fx.doctorFuture, fx.ciFuture.id);
+  const futureAppt = await bookWith(fx.checkinTokens[5], fx.doctorFuture, fx.ciFuture.id);
   check(
     "the future-dated fixture could be booked",
     futureAppt.status === 201,
@@ -1334,7 +1387,7 @@ const queueChecks = async () => {
   );
   const futureCheckIn = await call(
     `/appointments/${futureAppt.data?.appointment?.id}/check-in`,
-    { method: "POST", token: fx.checkinTokens[0] },
+    { method: "POST", token: fx.checkinTokens[5] },
   );
   check(
     "check-in is refused while the slot has not started",
@@ -1344,7 +1397,7 @@ const queueChecks = async () => {
   if (fx.ciFutureIsToday) {
     // The case the old date-based rule got wrong: same local date, later instant.
     const localDate = (await call(`/appointments/${futureAppt.data.appointment.id}`, {
-      token: fx.checkinTokens[0],
+      token: fx.checkinTokens[5],
     })).data?.appointment?.date;
     check(
       "a slot LATER TODAY is refused even though its date is today",
@@ -1361,11 +1414,11 @@ const queueChecks = async () => {
   fx.futureAppointment = futureAppt.data?.appointment?.id;
 
   // A slot starting at "now".
-  const nowAppt = await bookWith(fx.checkinTokens[1], fx.doctorNow, fx.ciNow.id);
+  const nowAppt = await bookWith(fx.checkinTokens[6], fx.doctorNow, fx.ciNow.id);
   check("the now-dated fixture could be booked", nowAppt.status === 201, `HTTP ${nowAppt.status} ${nowAppt.code}`);
   const nowCheckIn = await call(`/appointments/${nowAppt.data?.appointment?.id}/check-in`, {
     method: "POST",
-    token: fx.checkinTokens[1],
+    token: fx.checkinTokens[6],
   });
   check(
     "check-in is accepted for a slot starting at the current instant",
@@ -1374,11 +1427,11 @@ const queueChecks = async () => {
   );
 
   // A slot that started earlier.
-  const pastAppt = await bookWith(fx.checkinTokens[2], fx.doctorPast, fx.ciPast.id);
+  const pastAppt = await bookWith(fx.checkinTokens[7], fx.doctorPast, fx.ciPast.id);
   check("the past-dated fixture could be booked", pastAppt.status === 201, `HTTP ${pastAppt.status} ${pastAppt.code}`);
   const pastCheckIn = await call(`/appointments/${pastAppt.data?.appointment?.id}/check-in`, {
     method: "POST",
-    token: fx.checkinTokens[2],
+    token: fx.checkinTokens[7],
   });
   check(
     "check-in is accepted for a slot that already started",
@@ -1390,7 +1443,7 @@ const queueChecks = async () => {
   // closed, or is not the caller's, is still refused.
   const closedNotStarted = await call(`/appointments/${futureAppt.data?.appointment?.id}/check-in`, {
     method: "POST",
-    token: fx.checkinTokens[1],
+    token: fx.checkinTokens[6],
   });
   check(
     "another patient cannot check in to a future slot they do not own",

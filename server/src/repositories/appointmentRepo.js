@@ -261,6 +261,40 @@ export const markReminderSent = async (id, tx = null) => {
 };
 
 /**
+ * Atomically claim an appointment for its reminder.
+ *
+ * `markReminderSent` above is fire-and-forget: it cannot report whether it was the
+ * caller that changed the column or one that found it already set. The sweep needs
+ * to know, because "did I win the claim?" is exactly what decides whether it sends
+ * a message. So the claim and the question are the same statement: the UPDATE is
+ * guarded on `IS NULL` and only reports a row when it actually changed one.
+ *
+ * Two sweeps selecting the same appointment therefore produce exactly one claim,
+ * no matter how close together they run.
+ *
+ * @returns {Promise<boolean>} true when this caller won the claim.
+ */
+export const claimReminder = async (id) => {
+  const r = await query(
+    `UPDATE appointments
+        SET reminder_sent_at = now()
+      WHERE id = $1 AND reminder_sent_at IS NULL
+      RETURNING id`,
+    [id],
+  );
+  return (r.rowCount ?? 0) > 0;
+};
+
+/**
+ * Release a reminder claim that was taken for an appointment that then turned out
+ * to be unusable, so a later sweep is not permanently blocked by a claim against
+ * nothing.
+ */
+export const releaseReminder = async (id) => {
+  await query("UPDATE appointments SET reminder_sent_at = NULL WHERE id = $1", [id]);
+};
+
+/**
  * Reschedule in one statement. `starts_at` / `ends_at` move with the new
  * slot so the exclusion constraint applies to the new time.
  */
@@ -269,7 +303,12 @@ export const reschedule = async (id, { slotId, startsAt, endsAt, mode, fee }, tx
   await runner.query(
     `UPDATE appointments
         SET slot_id = $2, starts_at = $3, ends_at = $4, mode = $5,
-            fee = COALESCE($6, fee), status = 'confirmed', updated_at = now()
+            fee = COALESCE($6, fee), status = 'confirmed', updated_at = now(),
+            -- The visit now starts at a different time, so the reminder that was
+            -- sent for the OLD time says nothing about this one. Clearing the
+            -- stamp is what lets the sweep remind about the new time; without it
+            -- a rescheduled appointment is silently never reminded again.
+            reminder_sent_at = NULL
       WHERE id = $1`,
     [id, slotId, startsAt, endsAt, mode, fee ?? null],
   );
@@ -366,4 +405,4 @@ export const history = {
     })),
 };
 
-export default { list, findById, findRawById, lockById, insert, updateFields, markCancelled, markCompleted, markCheckedIn, markReminderSent, reschedule, findPatientClash, findActiveForSlot, count, history };
+export default { list, findById, findRawById, lockById, insert, updateFields, markCancelled, markCompleted, markCheckedIn, markReminderSent, claimReminder, releaseReminder, reschedule, findPatientClash, findActiveForSlot, count, history };

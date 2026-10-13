@@ -105,11 +105,39 @@ async function askGemini(prompt) {
  *  Symptom analysis                                                   *
  * ------------------------------------------------------------------ */
 
+/**
+ * Whether a live model is configured, i.e. whether anything leaves the machine.
+ *
+ * With no key the triage engine is entirely rule-based and local, so nothing is
+ * transmitted and asking for consent would be theatre.
+ */
+export const triageSendsData = () => Boolean(GEMINI_KEY);
+
+/**
+ * Symptom description -> department, urgency and recommended doctors.
+ *
+ * @param {string} description what the patient typed
+ * @param {object} extra
+ * @param {boolean} extra.consent the patient explicitly agreed to send this to a
+ *        third-party AI service. Required when a model is configured, and checked
+ *        here rather than in the route so that no caller can skip it.
+ */
 export const analyzeSymptoms = async (description, extra = {}) => {
   const startedAt = Date.now();
   const text = [description, extra.symptoms, extra.reason].filter(Boolean).join(". ");
   if (!text.trim())
     throw new AppError("Please describe your symptoms", 400, "EMPTY_INPUT");
+
+  // Before anything is read, assembled or sent. Nothing is transmitted without
+  // this, and the failure is explicit rather than a silent fallback.
+  if (triageSendsData() && extra.consent !== true) {
+    throw new AppError(
+      "Sending your description to an AI service needs your explicit consent. " +
+        "Nothing has been sent.",
+      428,
+      "CONSENT_REQUIRED",
+    );
+  }
 
   const rules = scoreByRules(text);
 
@@ -136,6 +164,11 @@ export const analyzeSymptoms = async (description, extra = {}) => {
     try {
       const specList = await specialtyRepo.all();
       const specialtyList = specList.map((s) => s.name).join(", ");
+      // WHAT IS SENT: the description the patient typed, and the age, gender and
+      // history they supplied on this form. Nothing else - no name, no account,
+      // no appointments, no queue state, no records. The function receives none
+      // of those and cannot read them: its whole input is `description` and
+      // `extra`, both supplied by this form.
       const prompt = [
         "You are a medical triage assistant for a hospital appointment booking platform.",
         "Do NOT diagnose. Only suggest which department to visit and how urgent it is.",

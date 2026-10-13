@@ -33,6 +33,28 @@ export const channels = {
 const money = (n) => `INR ${Number(n || 0).toLocaleString("en-IN")}`;
 const fmtSlot = (a) => `${a.date} at ${a.startTime}`;
 
+/**
+ * How often the background passes run.
+ *
+ * 15 minutes is chosen against the reminder window (24h by default): it is short
+ * enough that a reminder is never more than a quarter hour late, and long enough
+ * that the query is a rounding error for this database. It is NOT a promise of
+ * exact timing - see `startScheduler` for what this does and does not guarantee.
+ */
+export const SWEEP_INTERVAL_MINUTES = Math.max(
+  1,
+  Number(process.env.NOTIFICATION_SWEEP_MINUTES) || 15,
+);
+
+/**
+ * Set DISABLE_SCHEDULER=1 to run the API without background passes.
+ *
+ * Test suites turn this on: two suites sweeping the same database at once would
+ * race for the same reminder rows, and a suite that asserts on notification
+ * counts wants to control exactly when messages appear.
+ */
+export const SCHEDULER_ENABLED = process.env.DISABLE_SCHEDULER !== "1";
+
 const TEMPLATES = {
   appointment_booked: {
     subject: "Appointment confirmed",
@@ -59,6 +81,57 @@ const TEMPLATES = {
     body: (a, d, f, meta) =>
       `Your appointment with ${d.name} on ${a.date} is now "${meta?.status}".`,
   },
+
+  // Phase 10 added the events below. Each one has its own copy rather than
+  // reusing `status_update`, because "you are checked in" and "your visit is
+  // over" are different facts and a shared template made both read like a
+  // database field had changed.
+  appointment_checked_in: {
+    subject: "You are checked in",
+    body: (a, d, f, meta) =>
+      `Hi ${a.patientName}, you are checked in for your appointment with ${d.name} at ` +
+      `${f?.name || a.facilityName}. ${
+        meta?.roomPosition
+          ? `You are number ${meta.roomPosition} in the waiting room.`
+          : "Please wait to be called."
+      }`,
+  },
+  queue_called: {
+    subject: "It is your turn",
+    body: (a, d, f, meta) =>
+      `Hi ${a.patientName}, ${d.name} is ready to see you now for your appointment at ` +
+      `${f?.name || a.facilityName}.`,
+  },
+  appointment_completed: {
+    subject: "Visit complete",
+    body: (a, d, f) =>
+      `Hi ${a.patientName}, your appointment with ${d.name} on ${a.date} is complete. ` +
+      `Thank you for using MediCare.`,
+  },
+};
+
+/**
+ * Build the deduplication key for one logical event.
+ *
+ * The key must contain everything that distinguishes two GENUINE occurrences of
+ * the same event, because the database rejects the second insert outright. Leave
+ * something out here and a real second event is silently swallowed; add something
+ * that varies between two retries and duplicates get through.
+ *
+ * `discriminator` is what separates real repeats:
+ *   * a reschedule is keyed by its destination slot, so a patient can move an
+ *     appointment more than once and hear about each move;
+ *   * a reminder is keyed by the start time, so a rescheduled visit is reminded
+ *     about again rather than staying silent forever;
+ *   * a queue call is keyed by the call time, so being called, marked no-show and
+ *     called again produces two messages, not one.
+ *
+ * Returning null means "do not deduplicate", which is the right answer for an
+ * operator-triggered message that is not tied to any single occurrence.
+ */
+export const buildDedupeKey = ({ event, userId, appointmentId, discriminator }) => {
+  if (!event || !userId) return null;
+  return [event, userId, appointmentId ?? "none", discriminator ?? ""].join(":").slice(0, 300);
 };
 
 /* ------------------------------------------------------------------ *
@@ -149,6 +222,9 @@ export async function enqueueNotifications({
   patient,
   reason,
   status,
+  // What separates two genuine occurrences of this event. See buildDedupeKey.
+  discriminator = null,
+  extra = {},
   tx,
 }) {
   const template = TEMPLATES[event];
@@ -165,6 +241,23 @@ export async function enqueueNotifications({
     return [];
   }
 
+  // Every template renders `doctor.name`, so a missing doctor means the message
+  // cannot be written at all.
+  //
+  // This SKIPS rather than throws, and that choice is deliberate. The message is
+  // written inside the transaction that caused it, so throwing here would roll
+  // back the booking, the reschedule or the queue promotion as well - a patient
+  // would lose their appointment because a template could not render. A missing
+  // message is a much smaller failure than a lost appointment, and the error is
+  // logged rather than swallowed, so the cause is still visible.
+  if (!doctor?.name) {
+    log.error(
+      `Cannot notify "${event}" to ${userId}: the doctor record is missing, so the ` +
+        "template cannot be rendered. The appointment change is unaffected.",
+    );
+    return [];
+  }
+
   // A booking transaction is the only caller that must not be interrupted; fall
   // back to the pool for callers with no transaction of their own (the reminder
   // sweep, for instance).
@@ -174,8 +267,22 @@ export async function enqueueNotifications({
     );
   }
 
-  const body = template.body(appointment, doctor, facility, { reason, status });
+  const body = template.body(appointment, doctor, facility, {
+    reason,
+    status,
+    ...extra,
+  });
 
+  // The database is the deduplicator, not a check above it. Two concurrent
+  // requests for the same logical event both reach the INSERT; the unique index
+  // lets exactly one through and the other is discarded here. Doing it as a
+  // SELECT-then-INSERT would let both transactions observe "not sent yet" and
+  // both write, which is precisely the duplicate this is here to prevent.
+  // The duplicate case is handled by the repository refusing the row rather than
+  // by catching an exception here. That is not stylistic: this runs inside the
+  // transaction that booked the appointment, and a failed statement ABORTS a
+  // PostgreSQL transaction, so a caught-and-ignored constraint violation would
+  // still roll back the booking on COMMIT. `create` returns null instead.
   const notificationId = await notificationRepo.create(
     {
       userId,
@@ -184,6 +291,12 @@ export async function enqueueNotifications({
       title: template.subject,
       body,
       templateKey: event,
+      dedupeKey: buildDedupeKey({
+        event,
+        userId,
+        appointmentId: appointment?.id ?? null,
+        discriminator,
+      }),
       deliveries: [
         { channel: "in-app", status: "queued" },
         { channel: "sms", destination: phone, status: "queued" },
@@ -192,6 +305,14 @@ export async function enqueueNotifications({
     },
     tx,
   );
+
+  // null means this event already has a message. That is the expected outcome for
+  // a retried request, and it is not a failure: the caller receives an empty list
+  // and the booking that caused the message commits normally.
+  if (notificationId === null) {
+    log.info(`duplicate "${event}" suppressed for ${userId}`);
+    return [];
+  }
 
   // Same transaction: the intent to notify commits with the appointment.
   await notificationRepo.outbox.enqueue(
@@ -217,6 +338,11 @@ export async function enqueueNotifications({
  */
 export async function deliverNotification(notificationId) {
   const results = [];
+  // Declared out here on purpose. An earlier version declared `const inApp`
+  // INSIDE the try block, which shadowed this binding: the variable the return
+  // statement reads was still the empty array, so an in-app message - the only
+  // channel this project actually delivers - was never reported as delivered and
+  // never appeared in `results`.
   let inApp = [];
   try {
     const pending = await notificationRepo.outbox.pendingDeliveries(200);
@@ -227,7 +353,7 @@ export async function deliverNotification(notificationId) {
     // It still has to be marked, because leaving the delivery row in 'queued'
     // forever makes the outbox look permanently behind and hides a genuinely
     // stuck external delivery.
-    const inApp = mine.filter((d) => d.channel === "in-app");
+    inApp = mine.filter((d) => d.channel === "in-app");
     const external = mine.filter((d) => d.channel !== "in-app");
 
     for (const d of inApp) {
@@ -320,42 +446,213 @@ const enqueueInOwnTransaction = async ({ tx: _ignored, ...input }) =>
   withTransaction(async (t) => enqueueNotifications({ ...input, tx: t }));
 
 /**
+ * Drain the outbox: attempt every delivery still sitting in `queued`.
+ *
+ * This is the worker the schema has been promising since Phase 1. It exists
+ * because `enqueueNotifications` deliberately does no network I/O - it commits the
+ * INTENT to notify alongside the appointment change - so something has to attempt
+ * the actual send afterwards. The booking path calls `deliverNotification`
+ * directly for a fast path; this covers everything that path could not reach: a
+ * process that died between commit and send, a channel that was down at the
+ * moment, and messages enqueued by a sweep.
+ *
+ * Never throws. A drain that fails is a problem for the next tick, and taking the
+ * process down over it would be strictly worse than leaving the rows queued.
+ *
+ * @returns {Promise<{processed: number, failed: number, skipped: number}>}
+ */
+export const drainOutbox = async ({ limit = 100 } = {}) => {
+  const startedAt = new Date();
+  const pending = await notificationRepo.outbox.drainable(limit);
+
+  let processed = 0;
+  let failed = 0;
+  let skipped = 0;
+
+  // Grouped by notification so a message with three channels is delivered as one
+  // unit and its outbox row is settled once, rather than three times.
+  const byNotification = new Map();
+  for (const d of pending) {
+    const list = byNotification.get(d.notification_id) ?? [];
+    list.push(d);
+    byNotification.set(d.notification_id, list);
+  }
+
+  for (const [notificationId, deliveries] of byNotification) {
+    try {
+      const inApp = deliveries.filter((d) => d.channel === "in-app");
+      for (const d of inApp) {
+        await notificationRepo.recordDelivery(notificationId, {
+          channel: "in-app",
+          status: "delivered",
+        });
+      }
+      processed += inApp.length;
+
+      const external = deliveries.filter((d) => d.channel !== "in-app");
+      const outcomes = await Promise.allSettled(
+        external.map(async (d) => {
+          if (d.channel === "sms") return sendSms(d.destination, d.body);
+          return sendEmail(d.destination, d.title, d.body);
+        }),
+      );
+
+      // Settled once, with the channel kept alongside the result, so recording the
+      // outcome never has to re-derive which entry it belongs to.
+      const settled = outcomes.map((outcome, i) =>
+        outcome.status === "fulfilled"
+          ? outcome.value
+          : {
+              channel: external[i].channel,
+              status: "failed",
+              error: String(outcome.reason?.message ?? outcome.reason),
+            },
+      );
+      for (const r of settled) {
+        if (r.status === "failed") failed += 1;
+        else processed += 1;
+        try {
+          await notificationRepo.recordDelivery(notificationId, r);
+        } catch (err) {
+          log.error(`could not record ${r.channel} delivery for ${notificationId}: ${err.message}`);
+        }
+      }
+
+      // Settle the outbox marker only once nothing is left queued for it.
+      const stillQueued = await notificationRepo.outbox.pendingFor(notificationId);
+      if (stillQueued === 0) {
+        await notificationRepo.outbox.markDoneFor(notificationId);
+      }
+    } catch (err) {
+      failed += 1;
+      log.error(`outbox drain failed for ${notificationId}: ${err.message}`);
+      try {
+        await notificationRepo.recordFailure(notificationId, err.message);
+      } catch {
+        /* database is down too; the rows stay queued for the next pass */
+      }
+    }
+  }
+
+  // Anything left in `queued` past the attempt limit is parked rather than
+  // retried forever. Without this a permanently undeliverable channel would be
+  // re-attempted on every tick indefinitely.
+  const parked = await notificationRepo.outbox.parkStale(5, 24);
+  skipped += parked;
+
+  const summary = {
+    processed,
+    failed,
+    skipped: skipped + (pending.length - processed - failed),
+  };
+  await recordSweep("outbox", startedAt, summary).catch((err) =>
+    log.warn(`could not record outbox sweep: ${err.message}`),
+  );
+  log.info(
+    `outbox drain: ${summary.processed} delivered, ${summary.failed} failed, ${summary.skipped} left queued`,
+  );
+  return summary;
+};
+
+/** Record what a background pass did, so a silent timer is visible afterwards. */
+const recordSweep = async (kind, startedAt, summary) =>
+  notificationRepo.createSweep({
+    kind,
+    startedAt,
+    processed: summary.processed ?? 0,
+    skipped: summary.skipped ?? 0,
+    failed: summary.failed ?? 0,
+  });
+
+/**
  * Reminder sweep: notify about appointments starting within `hours`.
  *
- * Idempotency now comes from `appointments.reminder_sent_at`, stamped by an
- * UPDATE guarded on IS NULL, rather than an ad-hoc boolean column.
+ * Idempotency comes from `appointments.reminder_sent_at`, stamped by an UPDATE
+ * guarded on IS NULL. The guard is what makes two concurrent sweeps safe: both may
+ * select the same appointment, but only the UPDATE that actually changes a NULL
+ * returns a row, and only that caller sends.
+ *
+ * `reminder_sent_at` is also CLEARED when an appointment moves, so a rescheduled
+ * visit is reminded about again. Without that, a patient who moved an appointment
+ * into next week would never be reminded about the new time.
  */
 export const runReminderSweep = async (hours = 24) => {
+  const startedAt = new Date();
   const due = await notificationRepo.remindersDue(hours);
   const out = [];
+  let skipped = 0;
 
   for (const a of due) {
-    a.reminder_sent_at = new Date();
+    // Claim the row FIRST. If another sweep already claimed it, this returns no
+    // row and there is nothing to send - and crucially the check and the claim are
+    // the same statement, so two sweeps cannot both decide "mine".
+    const claimed = await appointmentRepo.claimReminder(a.id);
+    if (!claimed) {
+      skipped += 1;
+      continue;
+    }
+
     const doctor = await doctorRepo.findById(a.doctor_id);
     const facility = await facilities.findById(a.facility_id);
     const appointment = await (await import("../repositories/appointmentRepo.js")).findById(a.id);
+    if (!appointment) {
+      // The claim happened before the row was found missing. Release it so a
+      // later sweep is not permanently blocked by a claim against nothing.
+      await appointmentRepo.releaseReminder(a.id).catch(() => {});
+      skipped += 1;
+      continue;
+    }
 
     const result = await sendNotifications({
       event: "appointment_reminder",
       appointment,
       doctor,
       facility,
-      patient: { id: a.patient_id, name: appointment?.patientName },
+      patient: {
+        id: a.patient_id,
+        name: appointment?.patientName,
+        phone: appointment?.patientPhone,
+        email: appointment?.patientEmail,
+      },
+      // Keyed by the start time: the same visit is never reminded about twice,
+      // but a visit that moved to a new time is a new occurrence.
+      discriminator: appointment.startsAt ?? a.starts_at ?? null,
     });
     out.push(...result);
-
-    // Guarded on IS NULL, so a concurrent sweep cannot send twice.
-    await appointmentRepo.markReminderSent(a.id);
   }
 
-  log.info(`reminder sweep: ${out.length} reminder(s) sent`);
+  const summary = { processed: out.length, failed: 0, skipped };
+  await recordSweep("reminders", startedAt, summary).catch((err) =>
+    log.warn(`could not record reminder sweep: ${err.message}`),
+  );
+  log.info(
+    `reminder sweep: ${out.length} reminder(s) sent, ${skipped} skipped (already claimed)`,
+  );
   return out;
+};
+
+/** The most recent pass of each kind, so "is the timer alive?" is answerable. */
+export const schedulerStatus = async () => {
+  const runs = await notificationRepo.recentSweeps(20);
+  const byKind = {};
+  for (const r of runs) {
+    if (!byKind[r.kind]) byKind[r.kind] = r;
+  }
+  return {
+    intervalMinutes: SWEEP_INTERVAL_MINUTES,
+    enabled: SCHEDULER_ENABLED,
+    lastRun: byKind.reminders ?? null,
+    lastDrain: byKind.outbox ?? null,
+  };
 };
 
 export default {
   sendNotifications,
   enqueueNotifications,
   deliverNotification,
+  drainOutbox,
   runReminderSweep,
+  schedulerStatus,
   channels,
+  buildDedupeKey,
 };

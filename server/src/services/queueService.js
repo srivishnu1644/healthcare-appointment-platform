@@ -54,6 +54,12 @@ import { AppError } from "../utils/responses.js";
 import { withDbErrorMapping } from "../utils/dbErrors.js";
 import * as time from "../utils/time.js";
 import logger from "../utils/logger.js";
+import { facilities } from "../repositories/referenceRepo.js";
+import doctorRepo from "../repositories/doctorRepo.js";
+import {
+  enqueueNotifications,
+  deliverNotification,
+} from "./notificationService.js";
 
 const log = logger.tag("queue");
 
@@ -124,6 +130,33 @@ export const hasStarted = (startsAt, now = Date.now()) => {
  * @returns {Promise<{appointment: object, queuePosition: number|null,
  *                    estimatedWaitMinutes: number, estimatedWaitLabel: string}>}
  */
+/**
+ * Tell a patient they are checked in, and where they are in the line.
+ *
+ * Written inside the check-in transaction so the message commits with the
+ * check-in itself. A crash cannot leave somebody in the waiting room who was
+ * never told, which is the failure this whole path exists to avoid.
+ */
+const notifyCheckIn = async ({ tx, appointment, appointmentRow, roomPosition }) => {
+  const doctorRow = await doctorRepo.findById(appointment.doctor_id, tx);
+  const facility = await facilities.findById(
+    appointmentRow?.facilityId ?? doctorRow?.facilityId,
+    tx,
+  );
+  return enqueueNotifications({
+    event: "appointment_checked_in",
+    appointment: appointmentRow,
+    doctor: doctorRow,
+    facility,
+    patient: { id: appointment.patient_id, name: appointmentRow?.patientName },
+    extra: { roomPosition },
+    // No discriminator: one message per appointment, ever. A second check-in
+    // attempt is not a new event, and the unique index enforces that even if two
+    // requests arrive together.
+    tx,
+  });
+};
+
 export const joinQueue = async ({ actor, appointmentId }) => {
   // Read (unlocked) only to learn WHICH ROOM this is, so the room lock can be
   // taken first. This is safe because it cannot change between here and the
@@ -207,7 +240,9 @@ export const joinQueue = async ({ actor, appointmentId }) => {
     // Arriving puts the appointment into the waiting room. The schema has no
     // separate "arrived" state, so this reuses in-progress, matching the client,
     // which disables the button and shows "Checked in" once it is set.
-    if (appointment.status === "confirmed" || appointment.status === "scheduled") {
+    const firstArrival =
+      appointment.status === "confirmed" || appointment.status === "scheduled";
+    if (firstArrival) {
       await appointmentRepo.updateFields(appointmentId, { status: "in-progress" }, tx);
       await appointmentRepo.markCheckedIn(appointmentId, tx);
       await appointmentRepo.history.record(
@@ -223,8 +258,21 @@ export const joinQueue = async ({ actor, appointmentId }) => {
       );
     }
 
+    // The room is locked, so the position read here cannot shift before the
+    // transaction commits. That matters because the message tells the patient
+    // their place: a number computed after the commit could already be wrong.
+    const roomPosition = await queueRepo.roomPositionFor(appointmentId, tx);
     const appointmentRow = await appointmentRepo.findById(appointmentId, tx);
-    return { appointmentRow, position: entry.position, created };
+
+    // Only a genuine first arrival is news. A patient who taps "Check in" again
+    // is already in the room; telling them so a second time is noise, and the
+    // database would reject the duplicate anyway.
+    const queued =
+      created && firstArrival
+        ? await notifyCheckIn({ tx, appointment, appointmentRow, roomPosition })
+        : [];
+
+    return { appointmentRow, position: entry.position, created, queued };
   });
 
   if (outcome.created) {
@@ -232,6 +280,9 @@ export const joinQueue = async ({ actor, appointmentId }) => {
       `check-in ${appointmentId} -> position ${outcome.position} by ${actor?.id ?? "unknown"}`,
     );
   }
+
+  // Committed. Only now may anything leave the process.
+  for (const q of outcome.queued ?? []) await deliverNotification(q.id);
 
   return { appointment: outcome.appointmentRow, ...waitFor(outcome.position) };
 };
@@ -332,7 +383,7 @@ export const callNext = async ({ doctorId, clinicDate }) => {
     await queueRepo.lockRoom(doctorId, clinicDate, tx);
 
     const active = await queueRepo.findActiveConsultation(doctorId, clinicDate, tx);
-    if (active) return { entry: active, promoted: false };
+    if (active) return { entry: active, promoted: false, queued: [] };
 
     const head = await queueRepo.headWaiting(doctorId, clinicDate, tx);
     if (!head) {
@@ -353,11 +404,47 @@ export const callNext = async ({ doctorId, clinicDate }) => {
     }
 
     const entry = await queueRepo.findByAppointment(head.appointmentId, tx);
+
+    // "It is your turn" is the most time-critical message in the product: a patient
+    // who is not told will sit in the waiting room past their slot. It is written
+    // inside the room lock, so it cannot be sent for a promotion that then failed,
+    // and it commits with the promotion itself.
+    const queued = await notifyCalled(tx, entry, head);
+
     log.info(`call-next ${doctorId} @ ${clinicDate} -> ${head.patientName}`);
-    return { entry, promoted: true };
+    return { entry, promoted: true, queued };
   });
 
-  return outcome;
+  // Committed. Only now may anything leave the process.
+  for (const q of outcome.queued ?? []) await deliverNotification(q.id);
+
+  return { entry: outcome.entry, promoted: outcome.promoted };
+};
+
+/** Tell the promoted patient that it is their turn. */
+const notifyCalled = async (tx, entry, head) => {
+  const appointment = await appointmentRepo.findById(entry.appointmentId, tx);
+  // `head` comes from queueRepo, which maps rows to camelCase (`toEntry`), so the
+  // fields are doctorId/patientId. Reading `doctor_id` here silently yields
+  // undefined, the doctor lookup returns null, and the template throws on
+  // `d.name` - which rolled back the whole promotion, not just the message.
+  const doctorRow = await doctorRepo.findById(head.doctorId, tx);
+  const facility = await facilities.findById(
+    appointment?.facilityId ?? doctorRow?.facilityId,
+    tx,
+  );
+  return enqueueNotifications({
+    event: "queue_called",
+    appointment,
+    doctor: doctorRow,
+    facility,
+    patient: { id: head.patientId, name: head.patientName },
+    // Keyed by WHEN they were called. A patient called, marked no-show, and called
+    // again has genuinely been called twice and must hear about it twice; the same
+    // promotion retried three times must not.
+    discriminator: entry?.called_at ?? entry?.calledAt ?? null,
+    tx,
+  });
 };
 
 /**

@@ -2,15 +2,36 @@ import { EmptyState, Loading, StatusBadge, Alert } from "../components/ui.jsx";
 import { useNotifications } from "../context/NotificationsContext.jsx";
 import { formatDateTime, cx } from "../utils/format";
 
+/**
+ * Keyed by the events the server actually writes.
+ *
+ * The previous table was keyed by `booked`, `reminder`, `cancelled` and so on,
+ * while every message the server sends is named `appointment_booked`,
+ * `appointment_reminder`, `appointment_cancelled`. Nothing ever matched, so every
+ * notification in the app rendered the same fallback bell - the list looked
+ * uniform because the icons were broken, not because the messages were alike.
+ */
 const EVENT_ICON = {
-  booked: "✅",
-  confirmed: "✅",
-  reminder: "⏰",
-  rescheduled: "🔄",
-  cancelled: "❌",
-  completed: "🎉",
-  "no-show": "⚠️",
-  created: "📅",
+  appointment_booked: "\u2705",
+  appointment_reminder: "\u23F0",
+  appointment_rescheduled: "\u{1F504}",
+  appointment_cancelled: "\u274C",
+  appointment_checked_in: "\u{1F6CF}",
+  queue_called: "\u{1F44C}",
+  appointment_completed: "\u{1F389}",
+  status_update: "\u{1F4CC}",
+};
+
+/** A friendlier label than the raw event name in the badge. */
+const EVENT_LABEL = {
+  appointment_booked: "Confirmed",
+  appointment_reminder: "Reminder",
+  appointment_rescheduled: "Rescheduled",
+  appointment_cancelled: "Cancelled",
+  appointment_checked_in: "Checked in",
+  queue_called: "Called",
+  appointment_completed: "Completed",
+  status_update: "Status update",
 };
 
 export default function Notifications() {
@@ -22,6 +43,8 @@ export default function Notifications() {
     error,
     reload,
     markAllRead,
+    markOne,
+    marking,
   } = useNotifications();
 
   if (loading) return <Loading label="Loading notifications…" />;
@@ -70,6 +93,7 @@ export default function Notifications() {
           )}
         </div>
 
+        <div role="list" aria-label="Notification history">
         {notifications.length === 0 ? (
           <div className="card">
             <EmptyState
@@ -83,6 +107,7 @@ export default function Notifications() {
             {notifications.map((n) => (
               <div
                 key={n.id}
+                role="listitem"
                 className={cx("card card-pad", !n.read && "border-brand")}
                 style={!n.read ? { borderLeftWidth: 3 } : undefined}
               >
@@ -104,23 +129,35 @@ export default function Notifications() {
                       className="row row-wrap tiny muted"
                       style={{ gap: "0.6rem", marginTop: "0.35rem" }}
                     >
-                      <span className="badge badge-brand">{n.event}</span>
+                      <span className="badge badge-brand">
+                        {EVENT_LABEL[n.event] ?? n.event}
+                      </span>
                       <StatusBadge status={n.status} />
                       {n.channel && <span>via {n.channel}</span>}
                       {n.email && <span>· {n.email}</span>}
                     </div>
                   </div>
-                  {!n.read && (
-                    <span
-                      className="dot"
-                      style={{ color: "var(--brand-600)" }}
-                    />
+                  {!n.read ? (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm nowrap"
+                      onClick={() => markOne(n.id)}
+                      disabled={marking === n.id}
+                      title="Mark this notification as read"
+                    >
+                      {marking === n.id ? "…" : "Mark read"}
+                    </button>
+                  ) : (
+                    <span className="tiny muted nowrap" title="Read">
+                      Read
+                    </span>
                   )}
                 </div>
               </div>
             ))}
           </div>
         )}
+        </div>
       </div>
     </div>
   );
