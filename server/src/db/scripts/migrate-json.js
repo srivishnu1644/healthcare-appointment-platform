@@ -17,7 +17,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { query, one, closePool, withTransaction } from "../../config/database.js";
+import { query, one, closePool } from "../../config/database.js";
 import { hashPassword } from "../../utils/password.js";
 import logger from "../../utils/logger.js";
 

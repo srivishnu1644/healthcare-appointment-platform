@@ -8,7 +8,7 @@
  * a clinical audit trail, not dashboard aggregates, and they have different
  * retention and access characteristics.
  */
-import { query, rows, one } from "../config/database.js";
+import { rows, one } from "../config/database.js";
 
 const TRIAGE_COLUMNS = `
   t.id, t.user_id, t.description, t.provider, t.urgency,
@@ -82,26 +82,4 @@ export const listForUser = async (userId, limit = 25) =>
     createdAt: r.created_at,
   }));
 
-/**
- * Provider health: how often the live model was used, and how slow it is.
- * Useful for deciding whether the Gemini integration is worth its cost.
- */
-export const providerStats = async () =>
-  (
-    await rows(
-      `SELECT provider,
-              count(*)::int                                  AS calls,
-              count(*) FILTER (WHERE provider LIKE 'google-%')::int AS live_calls,
-              round(avg(latency_ms))::int                     AS avg_latency_ms
-         FROM triage_sessions
-        GROUP BY provider
-        ORDER BY calls DESC`,
-    )
-  ).map((r) => ({
-    provider: r.provider,
-    calls: r.calls,
-    liveCalls: r.live_calls,
-    avgLatencyMs: r.avg_latency_ms,
-  }));
-
-export default { record, listForUser, providerStats };
+export default { record, listForUser };

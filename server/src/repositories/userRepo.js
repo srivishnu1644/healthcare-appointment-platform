@@ -77,18 +77,6 @@ export const findById = async (id, tx = null) => {
   );
 };
 
-/** Raw password hash, for the login path only. */
-export const findHashById = async (id) =>
-  one("SELECT id, password_hash FROM users WHERE id = $1", [id]);
-
-/**
- * All users. Used by requireAuth and by the migration/verification scripts.
- */
-export const findAll = async () =>
-  (await rows(`SELECT ${USER_COLUMNS} ${FROM_USERS} ORDER BY u.created_at`)).map(
-    toUser,
-  );
-
 /** Count users, optionally by role. */
 export const count = async (role) =>
   role
@@ -222,22 +210,11 @@ export const setPasswordHash = async (id, hash) => {
   );
 };
 
-/** Increment the token version, invalidating all outstanding JWTs. */
-export const bumpTokenVersion = async (id) => {
-  await query(
-    "UPDATE users SET token_version = token_version + 1, updated_at = now() WHERE id = $1",
-    [id],
-  );
-};
-
 export default {
   findByEmail,
   findById,
-  findAll,
-  findHashById,
   count,
   create,
   updateOwn,
   setPasswordHash,
-  bumpTokenVersion,
 };

@@ -180,36 +180,6 @@ export const listAppointments = async ({
   return { appointments, total, limit: size, offset: skip };
 };
 
-/**
- * Appointment status counts for a date range, for the operations tiles.
- *
- * Separate from `listAppointments` because a dashboard wants every status even
- * when the count is zero - a missing zero is indistinguishable from a missing
- * query.
- */
-export const appointmentStatusCounts = async ({ from, to } = {}) => {
-  const params = [];
-  const where = [];
-  if (from) {
-    params.push(from);
-    where.push(`${dateOf("a", "starts_at")} >= $${params.length}::date`);
-  }
-  if (to) {
-    params.push(to);
-    where.push(`${dateOf("a", "starts_at")} <= $${params.length}::date`);
-  }
-  const rowsOut = await rows(
-    `SELECT a.status::text AS status, count(*)::int AS n
-       FROM appointments a
-      WHERE ${where.length ? where.join(" AND ") : "true"}
-      GROUP BY a.status`,
-    params,
-  );
-  const out = {};
-  for (const r of rowsOut) out[r.status] = r.n;
-  return out;
-};
-
 /* ------------------------------------------------------------------ *
  *  Waiting rooms                                                     *
  * ------------------------------------------------------------------ */
@@ -437,7 +407,6 @@ export const notificationOps = async () => {
 
 export default {
   listAppointments,
-  appointmentStatusCounts,
   activeRooms,
   queueSummary,
   doctorAvailability,

@@ -7,7 +7,6 @@
  * messages.
  */
 import { query, rows, one } from "../config/database.js";
-import { find, findOne, inClause } from "./base.js";
 
 const toNotification = (r) =>
   r && {

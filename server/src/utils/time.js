@@ -261,20 +261,6 @@ export const durationMinutesBetween = (fromTime, toTime) => {
   return th * 60 + tm - (fh * 60 + fm);
 };
 
-/**
- * Confirm that a local wall-clock time actually exists on a date.
- *
- * On a spring-forward boundary the skipped hour genuinely does not occur, so
- * "09:00" on that date cannot be turned into an instant. Silently shifting it
- * would put the slot at the wrong time.
- *
- * @returns {boolean}
- */
-export const localTimeExists = (date, time) => {
-  const instant = localToInstant(date, time);
-  return localDate(instant) === date && localTime(instant) === time;
-};
-
 /** Human-readable zone name for logs and error messages. */
 export const zoneLabel = () => `${TZ} (UTC${currentOffsetMinutes() >= 0 ? "+" : ""}${(currentOffsetMinutes() / 60).toFixed(2)})`;
 
@@ -289,7 +275,6 @@ export default {
   isValidTime,
   isBookableDate,
   durationMinutesBetween,
-  localTimeExists,
   ambiguousLocalTime,
   nonexistentLocalTime,
   zoneLabel,

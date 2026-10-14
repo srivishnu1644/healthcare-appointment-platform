@@ -27,7 +27,7 @@
  *   node scripts/integration-check.js
  */
 import "./local-db-guard.mjs"; // MUST stay first: applies the local-DB override.
-import { query, closePool } from "../src/config/database.js";
+import { query, withTransaction, closePool } from "../src/config/database.js";
 
 const API = process.env.API_URL || "http://localhost:5000/api";
 
@@ -63,6 +63,110 @@ const call = async (path, { method = "GET", token, body } = {}) => {
 const login = async (email, password) =>
   (await call("/auth/login", { method: "POST", body: { email, password } })).data;
 
+/* ------------------------------------------------------------------ *
+ *  Fixture teardown                                                  *
+ * ------------------------------------------------------------------ */
+
+/**
+ * The reserved, non-routable domain this suite signs its fixtures up with. It
+ * is the ONLY thing in the codebase that writes to it, so matching on it cannot
+ * reach anybody else's row.
+ *
+ * Three accounts end this way, not the two the old cleanup assumed: `walk-` and
+ * `walk2-` are the patients, and `walk-doc-` is the provider created at step 1.
+ * Scoping on the domain rather than on two hard-coded prefixes is what catches
+ * all three, including any the suite grows later.
+ */
+const FIXTURE_DOMAIN = "@integration.invalid";
+
+/**
+ * Children first, parents last, and in that order for a reason.
+ *
+ * The foreign keys are not uniformly ON DELETE CASCADE. Verified against the
+ * live schema with:
+ *
+ *   appointments.patient_id            -> users                   RESTRICT
+ *   appointments.slot_id               -> slots                   RESTRICT
+ *   triage_sessions.user_id            -> users                   NO ACTION
+ *   audit_logs.actor_id                -> users                   NO ACTION
+ *   appointment_status_history.changed_by -> users                NO ACTION
+ *   notifications / queue_entries / refresh_tokens / patient_profiles
+ *                                    -> users                   CASCADE
+ *
+ * A previous version deleted only the users, in the obvious order, and swallowed
+ * the error. `appointments.patient_id` is RESTRICT, so the statement was refused
+ * with 23503 on every run, nothing was removed, and each pass left two more
+ * walkthrough patients behind - which is why the fixtures accumulated.
+ *
+ * So the NO ACTION children go first, then the appointments whose deletion
+ * cascades their own notifications, queue entries and status history, and the
+ * users last. The whole thing runs in one transaction: either every level is
+ * removed or none is, so a failure can never leave a half-deleted tree.
+ *
+ * @returns {Promise<{users: number, deleted: Record<string, number>}>}
+ */
+const removeFixtures = async () =>
+  withTransaction(async (tx) => {
+    const ids = (
+      await tx.rows("SELECT id FROM users WHERE email LIKE $1", [`%${FIXTURE_DOMAIN}`])
+    ).map((r) => r.id);
+    if (ids.length === 0) return { users: 0, deleted: {} };
+
+    const deleted = {};
+    const run = async (label, sql) => {
+      deleted[label] = (await tx.query(sql, [ids])).rowCount;
+    };
+
+    // Level 1 - reference a user directly and are NOT cascaded. The id columns
+    // are text, not uuid: a uuid[] cast here fails with "operator does not
+    // exist: text = uuid".
+    await run("triage_sessions", "DELETE FROM triage_sessions WHERE user_id = ANY($1::text[])");
+    await run("audit_logs", "DELETE FROM audit_logs WHERE actor_id = ANY($1::text[])");
+    await run(
+      "appointment_status_history",
+      "DELETE FROM appointment_status_history WHERE changed_by = ANY($1::text[])",
+    );
+
+    // Level 2 - RESTRICT from users. notifications, queue_entries and the rest
+    // of this appointment's history cascade from here.
+    await run("appointments", "DELETE FROM appointments WHERE patient_id = ANY($1::text[])");
+
+    // Level 3 - the parents. Everything else cascades off these rows: a
+    // walkthrough provider's own slots, languages and services go with the
+    // doctors row that references this user.
+    await run("users", "DELETE FROM users WHERE id = ANY($1::text[])");
+
+    return { users: ids.length, deleted };
+  });
+
+/**
+ * Run teardown, reporting rather than swallowing any failure.
+ *
+ * A cleanup that fails silently is worse than one that does not run: the next
+ * run then asserts against the previous run's leftovers. So this returns the
+ * error instead of eating it, and the caller decides the exit code.
+ *
+ * @returns {Promise<Error|null>} null on success, the failure otherwise
+ */
+const cleanUp = async () => {
+  try {
+    const { users, deleted } = await removeFixtures();
+    const counts = Object.entries(deleted)
+      .filter(([, n]) => n > 0)
+      .map(([t, n]) => `${t}=${n}`)
+      .join(" ");
+    console.log(`  cleanup: removed ${users} fixture user(s)${counts ? ` and ${counts}` : ""}`);
+    return null;
+  } catch (err) {
+    console.error(
+      `  CLEANUP FAILED: ${err.message}` +
+        (err.code ? ` [${err.code}]` : "") +
+        " - fixture rows may remain; the next run asserts against stale data.",
+    );
+    return err;
+  }
+};
+
 const CLINIC = {
   date: (d) =>
     new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(d),
@@ -81,13 +185,20 @@ const run = async () => {
   let slotId = null;
   let doctorId = null;
   let doctorUserId = null;
+  // Steps 13 and 14 run outside the try below - they are independent of the
+  // clinic-day flow - so the walkthrough patient's token and email are declared
+  // here and assigned inside the try. Declaring them with `const` inside the
+  // try left both steps 13 and 14 referring to a binding that is not in scope,
+  // so the suite crashed with `PT is not defined` before asserting anything.
+  let PT = null;
+  let email = null;
 
   try {
     /* ================================================================= *
      * 1. Register and sign in
      * ================================================================= */
     beginStep(1, "a new patient registers");
-    const email = `walk-${RUN}@integration.invalid`;
+    email = `walk-${RUN}@integration.invalid`;
     const reg = await call("/auth/register", {
       method: "POST",
       body: {
@@ -99,7 +210,7 @@ const run = async () => {
     });
     check("1. registration succeeds", reg.status === 201, `HTTP ${reg.status}`);
     check("1. a token is issued immediately", Boolean(reg.data?.token));
-    const PT = reg.data.token;
+    PT = reg.data.token;
     check("1. the new account is a patient", reg.data?.user?.role === "patient", reg.data?.user?.role);
 
     const relogin = await login(email, "walkthrough-pass-123");
@@ -510,7 +621,7 @@ const run = async () => {
 
   const provider = await call("/ai/assist", { token: PT });
   check("13. the capability descriptor states its limits honestly",
-      typeof provider.data?.maxQuestionLength === "number" &&
+      typeof provider.data?.limits?.maxQuestionLength === "number" &&
       typeof provider.data?.disclaimer === "string",
       JSON.stringify(Object.keys(provider.data ?? {})));
 
@@ -518,20 +629,25 @@ const run = async () => {
    * 14. Triage requires explicit consent
    * ================================================================== */
   beginStep(14, "triage requires explicit consent");
-  const configured = provider.data?.available === true || provider.data?.modelAvailable === true;
+  // Whether consent is required is decided by ASKING THE SERVER, not by reading
+  // the assistant's descriptor. The two are independent: the assistant can be
+  // stubbed while triage still transmits to a model (or to the mock adapter, which
+  // the consent gate deliberately treats as transmitting), and the reverse is also
+  // true. Predicting it from `modelAvailable` in this process's own environment
+  // got it wrong and asserted a 200 where the server correctly answered 428.
   const noConsent = await call("/ai/triage", {
     method: "POST",
     token: PT,
     body: { description: "sharp pain in the lower right abdomen since last night" },
   });
 
-  if (configured) {
+  if (noConsent.status === 428) {
     check("14. without consent it is refused with 428 CONSENT_REQUIRED",
-      noConsent.status === 428 && noConsent.code === "CONSENT_REQUIRED",
+      noConsent.code === "CONSENT_REQUIRED",
       `HTTP ${noConsent.status} ${noConsent.code ?? ""}`);
   } else {
-    check("14. with no model configured, nothing is transmitted so triage still works",
-      noConsent.status === 200, `HTTP ${noConsent.status}`);
+    check("14. with nothing transmitted, triage still works without consent",
+      noConsent.status === 200, `HTTP ${noConsent.status} ${noConsent.code ?? ""}`);
     check("14. and it says it is a local fallback",
       noConsent.data?.provider === "rule-based-fallback",
       `provider=${noConsent.data?.provider}`);
@@ -555,18 +671,16 @@ const run = async () => {
 
 run()
   .then(async () => {
-    // Clean up the fixtures this suite created.
-    await query("DELETE FROM users WHERE email LIKE 'walk-%@integration.invalid'").catch(() => {});
-    await query("DELETE FROM users WHERE email LIKE 'walk2-%@integration.invalid'").catch(() => {});
+    const cleanupError = await cleanUp();
     await closePool();
     console.log("");
     console.log(`  === ${passed} passed, ${failed} failed ===`);
-    process.exit(failed === 0 ? 0 : 1);
+    process.exit(failed === 0 && !cleanupError ? 0 : 1);
   })
   .catch(async (err) => {
     console.error(`  suite crashed: ${err.stack ?? err.message}`);
-    await query("DELETE FROM users WHERE email LIKE 'walk-%@integration.invalid'").catch(() => {});
-    await query("DELETE FROM users WHERE email LIKE 'walk2-%@integration.invalid'").catch(() => {});
+    // A crash still tears down, and cleanUp already reports its own failure.
+    await cleanUp();
     await closePool().catch(() => {});
     console.log("");
     console.log(`  === ${passed} passed, ${failed} failed ===`);

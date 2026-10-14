@@ -267,18 +267,6 @@ export const GENERAL_HEALTH_PATTERNS = [
   /\b(i (have|'ve got|am getting)|my \w+ (hurts?|aches?|itches?))\b/i,
 ];
 
-export const EXAMPLES = [
-  { question: "How do I book an appointment?", intent: "book" },
-  { question: "Can I reschedule to a later time?", intent: "reschedule" },
-  { question: "I need to cancel my appointment", intent: "cancel" },
-  { question: "How do I check in when I arrive?", intent: "checkin" },
-  { question: "What does my queue position mean?", intent: "queue-terms" },
-  { question: "Where can I see my notifications?", intent: "navigate" },
-  { question: "What is a consultation fee?", intent: "payments" },
-  { question: "I have a headache - what could cause it?", intent: GENERAL_HEALTH },
-  { question: "Can you diagnose my chest pain?", intent: "scope" },
-];
-
 /** Menu entries the UI renders; kept beside the knowledge base so they agree. */
 export const SUGGESTED_QUESTIONS = [
   "How do I book an appointment?",

@@ -63,28 +63,6 @@ export const findByHash = async (tokenHash) =>
   );
 
 /**
- * Mark a token as rotated: consumed, and replaced by `replacedById`.
- *
- * Guarded on the token still being live, so two concurrent refreshes of the
- * same token cannot both succeed. The loser's UPDATE affects zero rows, which
- * it detects via rowCount and reports as reuse.
- *
- * @returns {Promise<boolean>} true if this call performed the rotation
- */
-export const markRotated = async (id, replacedById, when = new Date()) => {
-  const r = await query(
-    `UPDATE refresh_tokens
-        SET revoked_at = $2,
-            revoked_reason = 'rotated',
-            replaced_by = $3,
-            used_at = $2
-      WHERE id = $1 AND revoked_at IS NULL`,
-    [id, when, replacedById],
-  );
-  return r.rowCount === 1;
-};
-
-/**
  * Revoke one token.
  *
  * @param {string} id
@@ -172,7 +150,6 @@ export const countActive = async (userId) =>
 export default {
   create,
   findByHash,
-  markRotated,
   revoke,
   revokeFamily,
   revokeAllForUser,

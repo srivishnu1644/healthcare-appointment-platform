@@ -448,18 +448,6 @@ const notifyCalled = async (tx, entry, head) => {
 };
 
 /**
- * A patient's own position for one appointment, or null if not queued.
- */
-export const positionFor = async (appointmentId) => {
-  const entry = await queueRepo.findByAppointment(appointmentId);
-  if (!entry) return waitFor(null);
-  // The patient's real place in the ROOM, computed. The stored per-slot number
-  // is always 1 and told someone waiting behind two others that they were next.
-  const position = await queueRepo.roomPositionFor(appointmentId);
-  return waitFor(position);
-};
-
-/**
  * Queue positions for a whole page of appointments, in ONE query.
  *
  * Now the computed room position rather than the stored per-slot number, which
@@ -482,7 +470,6 @@ export default {
   getQueue,
   getRoom,
   callNext,
-  positionFor,
   positionsForAppointments,
   hasStarted,
 };

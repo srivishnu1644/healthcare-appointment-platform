@@ -8,7 +8,7 @@
  * over an index.
  */
 import { query, rows, one } from "../config/database.js";
-import { find, DATE_EXPR, TIME_EXPR, tzLiteral } from "./base.js";
+import { DATE_EXPR, tzLiteral } from "./base.js";
 
 /**
  * "Today" in the business timezone, computed by the database.

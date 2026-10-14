@@ -198,10 +198,30 @@ const run = async () => {
   }
 
   // --- AI triage ---
-  const triage = await call("/ai/triage", {
+  // Whether consent is required depends on how the API process was configured -
+  // a model or the mock adapter transmits the description, so the server refuses
+  // without consent. Ask the server rather than predicting from this process's
+  // environment; the two do not share one.
+  const triageProbe = await call("/ai/triage", {
     method: "POST",
     token: patientToken,
     body: { description: "chest pain and shortness of breath" },
+  });
+  const triageConsentRequired = triageProbe.status === 428;
+  if (triageConsentRequired) {
+    check(
+      "triage without consent is refused",
+      triageProbe.body?.error?.code === "CONSENT_REQUIRED",
+      `status=${triageProbe.status}`,
+    );
+  }
+  const triage = await call("/ai/triage", {
+    method: "POST",
+    token: patientToken,
+    body: {
+      description: "chest pain and shortness of breath",
+      ...(triageConsentRequired ? { consent: true } : {}),
+    },
   });
   const triageData = triage.body?.data;
   check(

@@ -35,12 +35,6 @@ export const isLegacyHash = (stored) =>
 export const hashPassword = async (plain) => bcrypt.hash(plain, ROUNDS);
 
 /**
- * Synchronous variant, used only by the seed builder (which runs at module load
- * and cannot await). Same format as {@link hashPassword}.
- */
-export const hashPasswordSync = (plain) => bcrypt.hashSync(plain, ROUNDS);
-
-/**
  * Verify a plaintext password against a stored value.
  *
  * Accepts both a real bcrypt hash and a legacy `hashed:` value, so accounts
@@ -84,7 +78,6 @@ export const needsRehash = (stored) => {
 
 export default {
   hashPassword,
-  hashPasswordSync,
   verifyPassword,
   isBcryptHash,
   isLegacyHash,

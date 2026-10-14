@@ -65,22 +65,4 @@ export const inClause = (values, startIndex = 1) => {
   return { clause: placeholders.join(","), params: list };
 };
 
-/**
- * Wrap a repository call so a missing row becomes a clear domain error
- * instead of an undefined dereference downstream.
- *
- * @param {string} entity   human name, e.g. "Doctor"
- * @param {string} id
- * @param {Function} loader async (id) => row|null
- * @param {string} code    error code, e.g. "DOCTOR_NOT_FOUND"
- */
-export const requireFound = async (entity, id, loader, code) => {
-  const row = await loader(id);
-  if (!row) {
-    const { AppError } = await import("../utils/responses.js");
-    throw new AppError(`${entity} not found`, 404, code);
-  }
-  return row;
-};
-
 export default { TZ, DATE_EXPR, TIME_EXPR, find, findOne, inClause };

@@ -14,9 +14,7 @@
  */
 import slotRepo from "../repositories/slotRepo.js";
 import queueRepo from "../repositories/queueRepo.js";
-import doctorRepo from "../repositories/doctorRepo.js";
 import * as time from "../utils/time.js";
-import { positionFor } from "./queueService.js";
 
 /**
  * "Today" in the business timezone, matching how slots are dated.
@@ -59,18 +57,10 @@ export const estimateWait = async (slot) => {
   };
 };
 
-/** The caller's own queue position for an appointment, if they are queued. */
-export const queuePositionFor = (appointmentId) => positionFor(appointmentId);
-
-/** The doctor record for a provider account, or null. */
-export const doctorForUser = (userId) => doctorRepo.findByUserId(userId);
-
 export default {
   getSlots,
   availableDates,
   getAvailabilitySummary,
   estimateWait,
-  queuePositionFor,
-  doctorForUser,
   todayLocal,
 };

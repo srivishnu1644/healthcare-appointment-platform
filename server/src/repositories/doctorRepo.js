@@ -465,17 +465,6 @@ export const setServices = async (doctorId, serviceIds) => {
   }
 };
 
-/** Replace a doctor's spoken languages. */
-export const setLanguages = async (doctorId, languages) => {
-  await query("DELETE FROM doctor_languages WHERE doctor_id = $1", [doctorId]);
-  for (const lang of languages) {
-    await query(
-      "INSERT INTO doctor_languages (doctor_id, language) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-      [doctorId, lang],
-    );
-  }
-};
-
 export const count = async () => one("SELECT count(*)::int AS c FROM doctors");
 
 export default {
@@ -489,6 +478,5 @@ export default {
   listForAdmin,
   updateByAdmin,
   setServices,
-  setLanguages,
   count,
 };
