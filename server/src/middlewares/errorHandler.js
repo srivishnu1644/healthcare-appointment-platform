@@ -72,10 +72,63 @@ const mapDatabaseError = (err) => {
   }
 };
 
+/**
+ * Translate a body-parser failure into a client error.
+ *
+ * body-parser runs before any route handler, so its parse failures arrive here
+ * as raw exceptions. Nothing recognised them, so a malformed JSON body was
+ * reported as "Something went wrong on our side" - a 500 that blamed the server
+ * for the caller's typo, and dumped the unparsed payload into the error log.
+ *
+ * Matched on `err.type`, which only body-parser sets. Deliberately no fallback
+ * on `err.status`: an internal failure can carry any status, and guessing would
+ * downgrade real faults to 4xx. Anything unrecognised falls through to the 500
+ * branch below.
+ *
+ * The raw body is never echoed into the response or the log. It is caller input,
+ * it may be a credential, and reflecting it invites injection.
+ *
+ * @param {object} err
+ * @returns {AppError|null} a client error, or null if this is not a body
+ *   parse failure
+ */
+const mapBodyParseError = (err) => {
+  const type = typeof err?.type === "string" ? err.type : "";
+
+  // The body is not valid JSON, or was truncated mid-document.
+  if (type === "entity.parse.failed") {
+    return new AppError("Request body is not valid JSON", 400, "INVALID_JSON");
+  }
+
+  // Parsed fine, simply too large for the configured limit.
+  if (type === "entity.too.large") {
+    return new AppError("Request body is too large", 413, "PAYLOAD_TOO_LARGE");
+  }
+
+  // A charset or content-encoding we do not accept.
+  if (type === "encoding.unsupported" || type === "charset.unsupported") {
+    return new AppError(
+      "Unsupported content encoding",
+      415,
+      "UNSUPPORTED_MEDIA_TYPE",
+    );
+  }
+
+  return null;
+};
+
 // eslint-disable-next-line no-unused-vars
 export const errorHandler = (err, req, res, next) => {
   if (err instanceof AppError) {
     return sendError(res, err.message, err.status, err.code, err.details);
+  }
+
+  const bodyError = mapBodyParseError(err);
+  if (bodyError) {
+    // The caller's mistake, and an expected one: warn rather than error, and
+    // log only the type so the payload never reaches disk.
+    log.warn(`rejected body: ${err.type}`);
+    return sendError(res, bodyError.message, bodyError.status, bodyError.code);
   }
 
   const mapped = mapDatabaseError(err);

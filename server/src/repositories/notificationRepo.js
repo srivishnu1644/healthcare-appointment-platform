@@ -82,16 +82,21 @@ export const unreadCount = async (userId) => {
 
 /**
  * Mark every unread notification for a user as read. Returns the count,
- * which the endpoint now reports (it previously mutated memory without
- * persisting and reported nothing).
+ * which the endpoint reports.
+ *
+ * This ran an UPDATE with no RETURNING through `one()`, which yields no rows
+ * and therefore `null` - so `r.count` threw and every call to this endpoint
+ * answered 500 with nothing marked. `query()` plus `RETURNING` gives the driver
+ * a real row count, exactly as `markOneReadCounted` below already does.
  */
 export const markAllRead = async (userId) => {
-  const r = await one(
+  const r = await query(
     `UPDATE notifications SET read_at = now()
-      WHERE user_id = $1 AND read_at IS NULL`,
+      WHERE user_id = $1 AND read_at IS NULL
+      RETURNING id`,
     [userId],
   );
-  return r.count ?? 0;
+  return r.rowCount ?? 0;
 };
 
 export const markOneRead = async (id, userId) => {

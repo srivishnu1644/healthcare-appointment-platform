@@ -496,6 +496,87 @@ const run = async () => {
     `HTTP ${sweepAttempt.status}`);
 
   /* ---------------------------------------------------------------- *
+   * 3b. Mark all read                                                 *
+   * ---------------------------------------------------------------- */
+  // Regression. `notificationRepo.markAllRead` ran an UPDATE with no RETURNING
+  // through `one()`, which returns no rows and therefore `null`, so `r.count`
+  // threw a TypeError and this endpoint answered 500 for every caller while
+  // marking nothing. The counts below are the point of the test: a 200 is not
+  // enough, the reported number must be the number of rows actually changed,
+  // and it must not reach beyond the caller.
+  // Seed an unread notification for the OTHER patient directly, so the scoping
+  // assertion below does not depend on how many the seed happens to have left
+  // for them at this point in the suite. Written straight to the database,
+  // which is how the rest of this suite builds its fixtures.
+  const otherUserId = (await query("SELECT id FROM users WHERE email = $1", ["aman@demo.com"]))
+    .rows[0].id;
+  await query(
+    `INSERT INTO notifications (user_id, event, title, body, dedupe_key)
+     VALUES ($1, 'e2e_readall_scope', 'Scope probe', 'must stay unread', $2)`,
+    [otherUserId, `readall-scope-${RUN_ID}`],
+  );
+  const amBefore = await call("/notifications", { token: otherToken });
+  const amUnreadBefore = (amBefore.data?.notifications ?? []).filter((n) => !n.read).length;
+
+  const ptUnreadBefore = (
+    await query(
+      "SELECT count(*)::int AS c FROM notifications WHERE user_id = $1 AND read_at IS NULL",
+      [ptId],
+    )
+  ).rows[0].c;
+  check(
+    "the caller has unread notifications to clear",
+    ptUnreadBefore > 0,
+    `unread=${ptUnreadBefore}`,
+  );
+
+  const anonReadAll = await call("/notifications/read-all", { method: "PATCH" });
+  check(
+    "an anonymous caller cannot mark all read",
+    anonReadAll.status === 401,
+    `HTTP ${anonReadAll.status}`,
+  );
+
+  const readAll = await call("/notifications/read-all", { method: "PATCH", token: pt });
+  check(
+    "mark all read answers 200",
+    readAll.status === 200,
+    `HTTP ${readAll.status} ${codeOf(readAll)}`,
+  );
+  check(
+    "and reports how many rows it changed",
+    readAll.data?.updated === ptUnreadBefore,
+    `updated=${readAll.data?.updated} expected=${ptUnreadBefore}`,
+  );
+
+  const ptUnreadAfter = (
+    await query(
+      "SELECT count(*)::int AS c FROM notifications WHERE user_id = $1 AND read_at IS NULL",
+      [ptId],
+    )
+  ).rows[0].c;
+  check(
+    "and every one of that user's notifications is persisted read",
+    ptUnreadAfter === 0,
+    `still unread=${ptUnreadAfter}`,
+  );
+
+  const amAfter = await call("/notifications", { token: otherToken });
+  const amUnreadAfter = (amAfter.data?.notifications ?? []).filter((n) => !n.read).length;
+  check(
+    "and no other user's notifications were touched",
+    amUnreadBefore > 0 && amUnreadAfter === amUnreadBefore,
+    `before=${amUnreadBefore} after=${amUnreadAfter}`,
+  );
+
+  const again = await call("/notifications/read-all", { method: "PATCH", token: pt });
+  check(
+    "calling it again with nothing unread is a no-op, not an error",
+    again.status === 200 && again.data?.updated === 0,
+    `HTTP ${again.status} updated=${again.data?.updated}`,
+  );
+
+  /* ---------------------------------------------------------------- *
    * 4. Reminders                                                    *
    * ---------------------------------------------------------------- */
   const remDoc = await makeFixtureDoctor("reminder");

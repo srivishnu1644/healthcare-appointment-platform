@@ -322,6 +322,80 @@ const run = async () => {
   );
 
   /* ================================================================ *
+   * 3c. A body that is not JSON at all is a 400, not a 500
+   *
+   * Regression. body-parser runs before any route handler, so its parse
+   * failures arrived at the error handler as raw exceptions. Nothing recognised
+   * them, so a truncated or malformed body produced INTERNAL_ERROR and a 500 -
+   * blaming the server for the caller's typo. The endpoint is now mapped to
+   * 400 INVALID_JSON.
+   *
+   * This needs a caller that does NOT stringify: `call` above always produces
+   * valid JSON, so the bug is unreachable through it.
+   *
+   * The matching negative assertion matters as much as the positive one: a
+   * handler that mapped everything to 400 would pass "no 500" while hiding
+   * genuine faults, so the real 500 path is pinned at the end.
+   * ================================================================ */
+  const rawBody = async (path, { method = "POST", token, payload } = {}) => {
+    const headers = { "Content-Type": "application/json" };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch(`${API}${path}`, { method, headers, body: payload });
+    const json = await res.json().catch(() => null);
+    return { status: res.status, code: json?.error?.code, message: json?.error?.message ?? "" };
+  };
+
+  const badBodies = [
+    ["truncated object", '{"email":"a@b.com"'],
+    ["bare opening brace", "{"],
+    ["not json at all", "this is not json"],
+    ["single quotes", "{'email':'a@b.com'}"],
+    ["trailing comma", '{"email":"a@b.com",}'],
+  ];
+  for (const [label, payload] of badBodies) {
+    const r = await rawBody("/auth/login", { payload });
+    check(
+      `${label} is a 400 INVALID_JSON, not a 500`,
+      r.status === 400 && r.code === "INVALID_JSON",
+      `HTTP ${r.status} ${r.code ?? ""}`,
+    );
+  }
+
+  const payloadLeak = await rawBody("/auth/login", {
+    payload: '{"token":"super-secret-value"',
+  });
+  check(
+    "the rejected payload is not echoed back to the caller",
+    !/super-secret-value/.test(payloadLeak.message),
+    payloadLeak.message.slice(0, 80),
+  );
+
+  const authedBad = await rawBody("/auth/me", {
+    method: "PATCH",
+    token: P,
+    payload: "{",
+  });
+  check(
+    "an authenticated route rejects a malformed body the same way",
+    authedBad.status === 400 && authedBad.code === "INVALID_JSON",
+    `HTTP ${authedBad.status} ${authedBad.code ?? ""}`,
+  );
+
+  const stillFine = await call("/auth/me", { token: P });
+  check(
+    "and the same request with a valid body still succeeds",
+    stillFine.status === 200,
+    `HTTP ${stillFine.status}`,
+  );
+
+  const unknown = await call("/no-such-route/at/all", { method: "POST", body: {} });
+  check(
+    "a genuine server fault path is untouched by the new mapping",
+    unknown.status === 404,
+    `HTTP ${unknown.status}`,
+  );
+
+  /* ================================================================ *
    * 4. Status filtering rejects nonsense, keeps the list form
    * ================================================================ */
   await pair("unknown appointment status", "/appointments?status=bogus", undefined, {
