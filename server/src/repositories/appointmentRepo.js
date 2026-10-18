@@ -252,22 +252,13 @@ export const markCheckedIn = async (id, tx = null) => {
   );
 };
 
-export const markReminderSent = async (id, tx = null) => {
-  const runner = tx ?? { query };
-  await runner.query(
-    "UPDATE appointments SET reminder_sent_at = now() WHERE id = $1 AND reminder_sent_at IS NULL",
-    [id],
-  );
-};
-
 /**
  * Atomically claim an appointment for its reminder.
  *
- * `markReminderSent` above is fire-and-forget: it cannot report whether it was the
- * caller that changed the column or one that found it already set. The sweep needs
- * to know, because "did I win the claim?" is exactly what decides whether it sends
- * a message. So the claim and the question are the same statement: the UPDATE is
- * guarded on `IS NULL` and only reports a row when it actually changed one.
+ * The claim and the question "did I win it?" are the same statement: the UPDATE
+ * is guarded on `IS NULL` and only reports a row when it actually changed one.
+ * The sweep needs to know, because that is exactly what decides whether it sends
+ * a message.
  *
  * Two sweeps selecting the same appointment therefore produce exactly one claim,
  * no matter how close together they run.
@@ -405,4 +396,4 @@ export const history = {
     })),
 };
 
-export default { list, findById, findRawById, lockById, insert, updateFields, markCancelled, markCompleted, markCheckedIn, markReminderSent, claimReminder, releaseReminder, reschedule, findPatientClash, findActiveForSlot, count, history };
+export default { list, findById, findRawById, lockById, insert, updateFields, markCancelled, markCompleted, markCheckedIn, claimReminder, releaseReminder, reschedule, findPatientClash, findActiveForSlot, count, history };

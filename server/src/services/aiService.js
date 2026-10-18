@@ -182,7 +182,7 @@ async function askGemini(prompt) {
  * so the consent gate must fire exactly as it does for the real one. Otherwise a
  * test with the mock would quietly skip the gate it is meant to be checking.
  */
-export const triageSendsData = () => Boolean(GEMINI_KEY) || TRIAGE_ADAPTER === "mock";
+const triageSendsData = () => Boolean(GEMINI_KEY) || TRIAGE_ADAPTER === "mock";
 
 /**
  * Symptom description -> department, urgency and recommended doctors.

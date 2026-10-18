@@ -106,27 +106,3 @@ export function SearchInput({
     </div>
   );
 }
-
-/** A labelled `<select>` matching `SearchInput`'s shape, for filter rows. */
-export function FilterSelect({ value, onChange, label, options, width = 170 }) {
-  return (
-    <div style={{ maxWidth: width, minWidth: 0 }}>
-      <label className="sr-only" htmlFor={`filter-${label}`}>
-        {label}
-      </label>
-      <select
-        id={`filter-${label}`}
-        className="input"
-        style={{ width: "100%" }}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-      >
-        {options.map((o) => (
-          <option key={o.value ?? ""} value={o.value ?? ""}>
-            {o.label}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}

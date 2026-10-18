@@ -2,6 +2,7 @@ import app from "./src/app.js";
 import logger from "./src/utils/logger.js";
 import { healthCheck, closePool } from "./src/config/database.js";
 import { startScheduler, stopScheduler } from "./src/services/scheduler.js";
+import { ensureSchemaWithTimeout } from "./src/db/ensureSchema.js";
 
 const log = logger.tag("server");
 const PORT = Number(process.env.PORT) || 5000;
@@ -50,10 +51,9 @@ const preflight = async (attempts = 5) => {
       "",
       "  Check DATABASE_URL in server/.env - see server/.env.example.",
       "  Has the schema been applied?",
-      "    node src/db/migrate.js",
-      "  Has it been seeded or migrated?",
-      "    node src/db/seed.js                 # fresh database",
-      "    node src/db/scripts/migrate-json.js  # from the JSON datastore",
+      "    node src/db/apply-schema.js    # fresh database",
+      "  Needs demo data?",
+      "    node src/db/seed.js",
       "",
     ].join("\n"),
   );
@@ -62,6 +62,24 @@ const preflight = async (attempts = 5) => {
 
 const start = async () => {
   if (!(await preflight())) process.exit(1);
+
+  // Bring the schema up to this build BEFORE accepting traffic.
+  //
+  // Not optional housekeeping: a query that names a column the database does not
+  // have is a 500, and a 500 on the notification inbox looks exactly like an
+  // inbox with nothing in it. Both the patient and the provider screen read
+  // that table, so one missing column emptied both at once.
+  //
+  // It cannot throw and it cannot hang: a role without DDL rights, or a slow
+  // catalogue query, produces a loud warning and a server that still starts.
+  try {
+    const { applied, skipped } = await ensureSchemaWithTimeout();
+    if (applied.length) log.info(`schema updated: ${applied.join(", ")}`);
+    else if (skipped.length) log.info(`schema already current (${skipped.join(", ")})`);
+  } catch (err) {
+    // ensureSchema reports its own failures; this only catches the timeout.
+    log.warn(`schema check did not complete: ${err.message}`);
+  }
 
   // Only after the preflight passes: a timer started against a database it cannot
   // reach would mark every pass as failing for no reason.

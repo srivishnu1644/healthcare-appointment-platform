@@ -68,7 +68,7 @@ export default function AdminFacilities() {
   if (loading) return <Loading label="Loading facilities…" />;
 
   return (
-    <div className="page">
+    <div className="page page-glass-bg">
       <div className="container stack">
         <div className="page-head row-between">
           <div>
@@ -179,7 +179,7 @@ export default function AdminFacilities() {
               className="input"
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
-              placeholder="MediCare City Hospital"
+              placeholder="BookMyDoc City Hospital"
             />
           </div>
           <div className="grid grid-2">

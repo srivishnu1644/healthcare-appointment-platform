@@ -10,6 +10,8 @@ import {
   Tabs,
 } from "../components/ui.jsx";
 import AppointmentCard from "../features/appointments/AppointmentCard.jsx";
+import AdvancingCard from "../features/appointments/AdvancingCard.jsx";
+import useOutwardWipe from "../features/appointments/useOutwardWipe.js";
 import {
   CancelModal,
   RescheduleModal,
@@ -34,6 +36,10 @@ export default function MyAppointments() {
   const [cancelTarget, setCancelTarget] = useState(null);
   const [moveTarget, setMoveTarget] = useState(null);
   const [busy, setBusy] = useState(false);
+
+  // Replays the outward wipe on whichever of the three actions was clicked.
+  // Delegated from the group, so no button's own onClick has to change.
+  const onWipe = useOutwardWipe();
 
   const shown =
     tab === "upcoming" ? upcoming : tab === "past" ? past : appointments;
@@ -64,11 +70,13 @@ export default function MyAppointments() {
   if (loading) return <Loading label="Loading your appointments…" />;
 
   return (
-    <div className="page">
-      <div className="container stack">
-        <div className="page-head">
-          <h1>My appointments</h1>
-          <p>Track status, reschedule or cancel your bookings.</p>
+    <div className="page page-glass-bg">
+      <div className="container stack-lg">
+        <div className="glass-panel">
+          <h1 style={{ marginBottom: "0.15rem" }}>My appointments</h1>
+          <p className="small muted" style={{ margin: 0 }}>
+            Track status, reschedule or cancel your bookings.
+          </p>
         </div>
 
         {error && <Alert tone="danger">{error}</Alert>}
@@ -84,7 +92,7 @@ export default function MyAppointments() {
         />
 
         {shown.length === 0 ? (
-          <div className="card">
+          <div className="glass-card card">
             <EmptyState
               icon="📅"
               title={
@@ -113,25 +121,28 @@ export default function MyAppointments() {
               // on, and when check-in is offered. The card only displays them.
               const actionable = LIVE_STATUSES.includes(a.status) && a.date >= today;
               return (
-                <div key={a.id} className="card card-pad">
+                <AdvancingCard
+                  key={a.id}
+                  stage={a.status}
+                  className="glass-card card card-pad"
+                >
                   <AppointmentCard
                     appointment={a}
                     variant="full"
-                    to={`/appointments/${a.id}`}
+                    to={`/appointments/${encodeURIComponent(a.id)}`}
                     actions={(
                       <>
-                        <Link
-                          to={`/appointments/${a.id}`}
-                          className="btn btn-ghost btn-sm btn-block"
-                        >
-                          View details
-                        </Link>
                         {actionable ? (
-                          <div className="stack-sm">
+                          <div className="appt-btn-group" onClickCapture={onWipe}>
+                            {/* Check-in is only offered on the day, and only once
+                                the slot has started. Leaving it out narrows the
+                                group to two buttons, which is why the wipe's
+                                direction is chosen with :first-child /
+                                :last-child rather than a fixed index. */}
                             {a.date === today && hasStarted(a) && (
                               <button
                                 type="button"
-                                className="btn btn-success btn-sm btn-block"
+                                className="btn appt-btn btn-sm"
                                 onClick={() => checkIn(a)}
                                 disabled={busy || a.status === "in-progress"}
                               >
@@ -141,12 +152,12 @@ export default function MyAppointments() {
                                     : a.queueState === "in-consultation"
                                       ? "In consultation"
                                       : "Checked in"
-                                  : "Check in"}
+                                  : "✓ Check in"}
                               </button>
                             )}
                             <button
                               type="button"
-                              className="btn btn-secondary btn-sm btn-block"
+                              className="btn appt-btn btn-sm"
                               onClick={() => setMoveTarget(a)}
                               disabled={busy}
                             >
@@ -154,19 +165,25 @@ export default function MyAppointments() {
                             </button>
                             <button
                               type="button"
-                              className="btn btn-ghost btn-sm btn-block"
+                              className="btn appt-btn btn-sm"
                               onClick={() => setCancelTarget(a)}
                               disabled={busy}
-                              style={{ color: "var(--danger)" }}
                             >
                               Cancel
                             </button>
                           </div>
                         ) : null}
+                        <span style={{ flex: 1 }} />
+                        <Link
+                          to={`/appointments/${encodeURIComponent(a.id)}`}
+                          className="btn btn-ghost btn-sm"
+                        >
+                          View details →
+                        </Link>
                       </>
                     )}
                   />
-                </div>
+                </AdvancingCard>
               );
             })}
           </div>

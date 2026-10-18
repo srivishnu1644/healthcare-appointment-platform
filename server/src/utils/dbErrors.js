@@ -154,7 +154,7 @@ const BY_SQLSTATE = {
  *   constraint violation this module understands and should be rethrown
  *   untouched for the global handler to deal with.
  */
-export const mapDbError = (err) => {
+const mapDbError = (err) => {
   if (!err || err instanceof AppError) return null;
 
   const byConstraint = err.constraint && BY_CONSTRAINT[err.constraint];
@@ -192,4 +192,4 @@ export const withDbErrorMapping = async (fn) => {
   }
 };
 
-export default { mapDbError, withDbErrorMapping };
+export default { withDbErrorMapping };

@@ -57,7 +57,7 @@ export default function AdminPatients() {
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
-    <div className="page">
+    <div className="page page-glass-bg">
       <div className="container stack">
         <div className="page-head row-between">
           <div>

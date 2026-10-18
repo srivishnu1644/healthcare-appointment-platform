@@ -72,7 +72,7 @@ export default function AdminNotifications() {
     : data.notifications || [];
 
   return (
-    <div className="page">
+    <div className="page page-glass-bg">
       <div className="container stack">
         <div className="page-head row-between">
           <div>
@@ -175,7 +175,14 @@ export default function AdminNotifications() {
                       </td>
                       <td className="muted">{n.channel}</td>
                       <td>
-                        <StatusBadge status={n.status} />
+                        <div className="row" style={{ gap: "0.35rem" }}>
+                          <StatusBadge status={n.status} />
+                          {/* A patient swiping a message away does not un-send
+                              it, and this screen is the record of what was
+                              sent. So dismissed messages stay listed — flagged,
+                              rather than quietly gone. */}
+                          {n.deletedAt && <span className="badge">Dismissed</span>}
+                        </div>
                       </td>
                       <td className="right muted nowrap">
                         {formatDateTime(n.createdAt)}

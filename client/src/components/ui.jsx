@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { cx, initials } from "../utils/format";
+import { doctorPhotoUrl } from "../utils/doctorPhotos.js";
 
 /* ------------------------------------------------------------------ *
  *  Badge — status pill                                              *
@@ -49,6 +51,40 @@ export function Avatar({ name, color, size = "", className }) {
     >
       {initials(name)}
     </span>
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ *  DoctorPhoto — portrait with an initials fallback                *
+ *                                                                    *
+ *  The photo is decorative, never the identity: if the remote image   *
+ *  fails (offline, blocked, removed upstream) the initials avatar    *
+ *  renders instead, so the UI never shows a broken image.            *
+ * ------------------------------------------------------------------ */
+export function DoctorPhoto({ doctor, size = "", className, width = 256 }) {
+  const [failed, setFailed] = useState(false);
+  const src = doctorPhotoUrl(doctor, width);
+  if (!src || failed) {
+    return (
+      <Avatar
+        name={doctor?.name}
+        color={doctor?.imageColor}
+        size={size}
+        className={className}
+      />
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      onError={() => setFailed(true)}
+      className={cx("avatar", size && `avatar-${size}`, className)}
+      style={{ objectFit: "cover" }}
+      title={doctor?.name}
+    />
   );
 }
 
@@ -131,8 +167,23 @@ export function ProgressBar({ value = 0, tone }) {
 
 /* ------------------------------------------------------------------ *
  *  Modal                                                             *
+ * ------------------------------------------------------------------ *
+ *  `variant="solid"` swaps the frosted panel for an opaque one and deepens
+ *  the scrim behind it. It exists for the Reschedule dialog, which is a
+ *  long list of small time buttons: on a translucent panel the page behind
+ *  showed through the gaps between them and made the selected time hard to
+ *  tell from the unselected ones. Opt-in, so the rest of the app keeps the
+ *  shared glass treatment.
  * ------------------------------------------------------------------ */
-export function Modal({ open, onClose, title, children, footer, size }) {
+export function Modal({
+  open,
+  onClose,
+  title,
+  children,
+  footer,
+  size,
+  variant,
+}) {
   if (!open) return null;
 
   // Close on backdrop click + Escape.
@@ -142,13 +193,20 @@ export function Modal({ open, onClose, title, children, footer, size }) {
 
   return (
     <div
-      className="modal-backdrop"
+      className={cx(
+        "modal-backdrop",
+        variant === "solid" && "modal-backdrop-solid",
+      )}
       onClick={onClose}
       onKeyDown={onKey}
       role="presentation"
     >
       <div
-        className={cx("modal", size === "lg" && "modal-lg")}
+        className={cx(
+          "modal",
+          size === "lg" && "modal-lg",
+          variant === "solid" && "modal-solid",
+        )}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
@@ -221,6 +279,7 @@ export function Alert({ tone = "info", title, children }) {
 export default {
   StatusBadge,
   Avatar,
+  DoctorPhoto,
   EmptyState,
   Spinner,
   Loading,

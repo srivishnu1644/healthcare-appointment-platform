@@ -44,7 +44,7 @@ if (EMAIL_ADAPTER && process.env.NODE_ENV === "production") {
   throw new Error("EMAIL_ADAPTER must not be set in production.");
 }
 const FROM_EMAIL =
-  process.env.NOTIFICATION_FROM_EMAIL || "notifications@medicare.demo";
+  process.env.NOTIFICATION_FROM_EMAIL || "notifications@bookmydoc.demo";
 
 export const channels = {
   sms: Boolean(TWILIO_SID && TWILIO_TOKEN && TWILIO_FROM),
@@ -127,7 +127,7 @@ const TEMPLATES = {
     subject: "Visit complete",
     body: (a, d, f) =>
       `Hi ${a.patientName}, your appointment with ${d.name} on ${a.date} is complete. ` +
-      `Thank you for using MediCare.`,
+      `Thank you for using BookMyDoc.`,
   },
 };
 
@@ -150,7 +150,7 @@ const TEMPLATES = {
  * Returning null means "do not deduplicate", which is the right answer for an
  * operator-triggered message that is not tied to any single occurrence.
  */
-export const buildDedupeKey = ({ event, userId, appointmentId, discriminator }) => {
+const buildDedupeKey = ({ event, userId, appointmentId, discriminator }) => {
   if (!event || !userId) return null;
   return [event, userId, appointmentId ?? "none", discriminator ?? ""].join(":").slice(0, 300);
 };
@@ -209,7 +209,7 @@ async function sendEmail(to, subject, body) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        from: `MediCare <${FROM_EMAIL}>`,
+        from: `BookMyDoc <${FROM_EMAIL}>`,
         to: [to],
         subject,
         text: body,
@@ -450,7 +450,7 @@ export async function deliverNotification(notificationId) {
  * the two halves above rather than duplicating them, so there is one code path
  * for rendering and one for delivery.
  */
-export async function sendNotifications(input) {
+async function sendNotifications(input) {
   const queued = input.tx
     ? await enqueueNotifications(input)
     : await enqueueInOwnTransaction(input);
@@ -676,17 +676,4 @@ export const schedulerStatus = async () => {
     lastRun: byKind.reminders ?? null,
     lastDrain: byKind.outbox ?? null,
   };
-};
-
-export { sendEmail };
-
-export default {
-  sendNotifications,
-  enqueueNotifications,
-  deliverNotification,
-  drainOutbox,
-  runReminderSweep,
-  schedulerStatus,
-  channels,
-  buildDedupeKey,
 };

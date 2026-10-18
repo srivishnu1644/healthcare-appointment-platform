@@ -121,25 +121,11 @@ export const revokeAllForUser = async (userId, reason = "revoked") => {
 };
 
 /**
- * Delete tokens that expired long ago.
+ * Live session count for a user.
  *
- * Deliberately keeps a grace period: a token that expired an hour ago can
- * still be replayed, and deleting its row would turn that replay into an
- * unrecognised token instead of a detectable one.
- *
- * @param {number} graceHours minimum age past expiry before deletion
- * @returns {Promise<number>} rows removed
+ * Reported by the profile endpoint so a user can see how many devices hold a
+ * valid refresh token for their account.
  */
-export const purgeExpired = async (graceHours = 24) => {
-  const r = await query(
-    `DELETE FROM refresh_tokens
-      WHERE expires_at < now() - ($1 || ' hours')::interval`,
-    [String(graceHours)],
-  );
-  return r.rowCount;
-};
-
-/** Live session count for a user. Used by the auth tests to assert revocation. */
 export const countActive = async (userId) =>
   one(
     `SELECT count(*)::int AS c FROM refresh_tokens
@@ -153,6 +139,5 @@ export default {
   revoke,
   revokeFamily,
   revokeAllForUser,
-  purgeExpired,
   countActive,
 };

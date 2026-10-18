@@ -9,7 +9,7 @@ import api, {
 
 const AuthContext = createContext(null);
 
-const USER_KEY = "medicare_user";
+const USER_KEY = "bookmydoc_user";
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => {

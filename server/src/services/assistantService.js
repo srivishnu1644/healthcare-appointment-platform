@@ -1,5 +1,5 @@
 /**
- * The MediCare assistant: how the app works, plus general healthcare
+ * The BookMyDoc assistant: how the app works, plus general healthcare
  * information.
  *
  * THE SECURITY POSTURE, IN ONE PLACE
@@ -54,7 +54,7 @@ import logger from "../utils/logger.js";
 const log = logger.tag("assistant");
 
 /** Hard limits, enforced here and mirrored by the route validator. */
-export const LIMITS = {
+const LIMITS = {
   minQuestionLength: 3,
   maxQuestionLength: 1000,
   // A model that has not answered in this long has failed, and the caller should
@@ -88,7 +88,7 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-flash-preview";
  * when a test asks for it. Reported by the endpoint so the UI can label AI text
  * honestly instead of implying a model was consulted when it was not.
  */
-export const assistantProvider = () =>
+const assistantProvider = () =>
   process.env.ASSISTANT_ADAPTER === "stub"
     ? "stub"
     : GEMINI_KEY
@@ -147,13 +147,13 @@ const askModel = async (prompt) => {
             parts: [
               {
                 text:
-                  "You are the help assistant inside the MediCare appointment " +
-                  "booking application. You explain how MediCare works and give " +
+                  "You are the help assistant inside the BookMyDoc appointment " +
+                  "booking application. You explain how BookMyDoc works and give " +
                   "general, widely-known healthcare information. You must not " +
                   "diagnose, prescribe, suggest a dose, give a treatment plan, " +
                   "or comment on any individual's medical record. If asked, " +
                   "explain that a clinician must assess that. Keep answers under " +
-                  "150 words and use plain language. Never invent MediCare " +
+                  "150 words and use plain language. Never invent BookMyDoc " +
                   "policies such as fees or cancellation windows - say you do not " +
                   "know.",
               },
@@ -207,7 +207,7 @@ const askModel = async (prompt) => {
  * data rather than instruction, and stripped of control characters that could
  * confuse the transport.
  */
-export const buildModelPrompt = (question) => {
+const buildModelPrompt = (question) => {
   const clean = String(question)
     // Control characters, including newlines, become spaces. A newline would let
     // the question start a line of its own in the prompt.
@@ -273,13 +273,13 @@ const UNKNOWN_ANSWER =
   "I am not sure what you are asking. I can help with:\n\n" +
   "• booking, rescheduling or cancelling an appointment\n" +
   "• checking in, and what your place in the waiting room means\n" +
-  "• finding your way around MediCare\n" +
+  "• finding your way around BookMyDoc\n" +
   "• general healthcare information\n\n" +
   "Try rephrasing, or pick one of the suggestions.";
 
 const NO_MODEL_ANSWER =
   "Live information is not available right now, so I cannot answer general " +
-  "healthcare questions at the moment. I can still help with how MediCare " +
+  "healthcare questions at the moment. I can still help with how BookMyDoc " +
   "works - booking, rescheduling, cancelling, checking in and the waiting room.\n\n" +
   "For anything about your own health, please speak to a clinician or pharmacist.";
 
@@ -349,7 +349,7 @@ export const ask = async ({ question, role = "patient" }) => {
     // application is responsible for, which is most of them.
     generatedByModel: sourcedFrom === "model",
     sourcedFrom,
-    provider: sourcedFrom === "model" ? assistantProvider() : "medicare-knowledge-base",
+    provider: sourcedFrom === "model" ? assistantProvider() : "bookmydoc-knowledge-base",
     refused: refusedRequest,
     suggestions: entry?.followUps?.length ? entry.followUps : SUGGESTED_QUESTIONS.slice(0, 4),
     disclaimer: MEDICAL_DISCLAIMER,
@@ -386,10 +386,8 @@ export const describe = () => ({
   suggestions: SUGGESTED_QUESTIONS,
   disclaimer: MEDICAL_DISCLAIMER,
   note:
-    "Answers about how MediCare works come from the application itself. " +
+    "Answers about how BookMyDoc works come from the application itself. " +
     "General healthcare questions may be answered by a language model, and are " +
     "labelled when they are. The assistant cannot diagnose, prescribe, or read " +
     "your medical records, and it cannot book, change or cancel anything for you.",
 });
-
-export default { ask, describe, classify, buildModelPrompt, assistantProvider, LIMITS };

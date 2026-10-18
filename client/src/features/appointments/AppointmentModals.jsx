@@ -197,6 +197,10 @@ export function RescheduleModal({ appointment, onClose, onDone }) {
       open={Boolean(appointment)}
       onClose={onClose}
       title="Reschedule appointment"
+      /* Opaque panel: this dialog is mostly a wall of small time buttons, and
+         on the shared glass those sat on a tint of whatever was behind the
+         dialog, which made the selected one hard to pick out. */
+      variant="solid"
       footer={
         <>
           <button type="button" className="btn btn-secondary" onClick={onClose}>

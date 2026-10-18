@@ -5,13 +5,6 @@ import { useToast } from "../context/ToastContext.jsx";
 import { homeFor } from "../components/Layout.jsx";
 import { Alert, Spinner } from "../components/ui.jsx";
 
-/** One-click fill so reviewers can jump between the three roles fast. */
-const DEMO = [
-  { label: "Patient", email: "patient@demo.com", password: "patient123" },
-  { label: "Doctor", email: "doctor1@demo.com", password: "doctor123" },
-  { label: "Admin", email: "admin@demo.com", password: "admin123" },
-];
-
 export default function Login() {
   const { login } = useAuth();
   const toast = useToast();
@@ -31,9 +24,13 @@ export default function Login() {
       const user = await login(email.trim(), password);
       toast.success(`Welcome back, ${user.name.split(" ")[0]}`);
       // Where they were trying to reach wins; otherwise their own dashboard.
-      navigate(location.state?.from?.pathname || homeFor(user.role), {
-        replace: true,
-      });
+      // The query string travels too, so a doctor page opened with ?book=1
+      // comes back on the booking tab rather than the overview.
+      const from = location.state?.from;
+      navigate(
+        from ? `${from.pathname}${from.search || ""}` : homeFor(user.role),
+        { replace: true },
+      );
     } catch (err) {
       setError(err.message);
     } finally {
@@ -41,22 +38,23 @@ export default function Login() {
     }
   };
 
-  const useDemo = (d) => {
-    setEmail(d.email);
-    setPassword(d.password);
-    setError(null);
-  };
-
   return (
-    <div className="page">
-      <div
-        className="container"
-        style={{ maxWidth: 440, paddingTop: "2rem", paddingBottom: "3rem" }}
-      >
+    <div className="page page-glass-bg">
+      <div className="container auth-wrap">
         <div className="card card-pad stack">
-          <div>
-            <h1 style={{ marginBottom: "0.2rem" }}>Welcome back</h1>
-            <p className="small muted">Sign in to manage your appointments.</p>
+          <div className="auth-brand">
+            <img
+              className="mark"
+              src="/logo-mark.svg"
+              alt=""
+              width="34"
+              height="34"
+            />
+            <strong style={{ fontSize: "1.1rem" }}>BookMyDoc</strong>
+          </div>
+          <div className="center">
+            <h1 style={{ marginBottom: "0.2rem" }}>Welcome Back</h1>
+            <p className="small muted">Login to your account</p>
           </div>
 
           {error && <Alert tone="danger">{error}</Alert>}
@@ -64,14 +62,14 @@ export default function Login() {
           <form onSubmit={submit} className="stack">
             <div className="field">
               <label className="label" htmlFor="email">
-                Email
+                Email Address
               </label>
               <input
                 id="email"
                 type="email"
                 className="input"
                 autoComplete="email"
-                placeholder="you@example.com"
+                placeholder="Enter your email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
@@ -87,7 +85,7 @@ export default function Login() {
                 type="password"
                 className="input"
                 autoComplete="current-password"
-                placeholder="••••••••"
+                placeholder="Enter your password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
@@ -99,40 +97,13 @@ export default function Login() {
               className="btn btn-primary btn-block"
               disabled={busy}
             >
-              {busy ? <Spinner /> : "Sign in"}
+              {busy ? <Spinner /> : "Login"}
             </button>
           </form>
 
           <p className="small center muted">
-            New here? <Link to="/register">Create a patient account</Link>
+            Don&apos;t have an account? <Link to="/register">Sign Up</Link>
           </p>
-
-          <div className="divider" />
-
-          <div className="stack-sm">
-            <span
-              className="tiny muted bold"
-              style={{ textTransform: "uppercase" }}
-            >
-              Demo accounts — click to fill
-            </span>
-            <div className="row" style={{ gap: "0.4rem" }}>
-              {DEMO.map((d) => (
-                <button
-                  key={d.label}
-                  type="button"
-                  className="btn btn-secondary btn-sm"
-                  style={{ flex: 1 }}
-                  onClick={() => useDemo(d)}
-                >
-                  {d.label}
-                </button>
-              ))}
-            </div>
-            <p className="tiny muted" style={{ margin: 0 }}>
-              patient@demo.com · doctor1@demo.com · admin@demo.com
-            </p>
-          </div>
         </div>
       </div>
     </div>

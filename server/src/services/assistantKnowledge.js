@@ -5,7 +5,7 @@
  * -----------------------------------------
  * Four of the five things the assistant is asked for - how to book, how to
  * reschedule, how to cancel, how to check in, what the queue words mean, and
- * where things are in MediCare - have exactly right answers, and they are
+ * where things are in BookMyDoc - have exactly right answers, and they are
  * answers THIS application is responsible for being right about. A model
  * improvising "you can cancel up to two hours before" would be inventing a
  * policy. So those answers are written out here, in this file, where they can
@@ -30,7 +30,7 @@ export const KNOWLEDGE = [
       /\bget an appointment\b/i,
     ],
     answer:
-      "Booking an appointment in MediCare takes four steps:\n\n" +
+      "Booking an appointment in BookMyDoc takes four steps:\n\n" +
       "1. Open Doctors and choose a provider - you can filter by specialty, " +
       "city, fee or video/in-person.\n" +
       "2. Open the provider's profile and pick an available date and time.\n" +
@@ -147,7 +147,7 @@ export const KNOWLEDGE = [
       /\bmenu\b/i,
     ],
     answer:
-      "Where things are in MediCare:\n\n" +
+      "Where things are in BookMyDoc:\n\n" +
       "• Doctors - search and filter providers, then open a profile to book.\n" +
       "• My Appointments - everything you have booked, with check-in, " +
       "reschedule and cancel.\n" +
@@ -174,7 +174,7 @@ export const KNOWLEDGE = [
       "booking summary before you confirm, so you always see the amount before " +
       "committing. Each slot has its own fee, and a video consultation may be " +
       "priced differently from an in-person one.\n\n" +
-      "MediCare does not process payment inside this app and cannot issue " +
+      "BookMyDoc does not process payment inside this app and cannot issue " +
       "refunds - please settle with the facility directly.",
     followUps: [],
   },
@@ -189,7 +189,7 @@ export const KNOWLEDGE = [
       /\bemergency\b/i,
     ],
     answer:
-      "I can help with how MediCare works - booking, rescheduling, cancelling, " +
+      "I can help with how BookMyDoc works - booking, rescheduling, cancelling, " +
       "checking in, the waiting room, and general healthcare information.\n\n" +
       "I cannot diagnose you, prescribe or suggest medication and dosage, read " +
       "your medical records, or give you a treatment plan. Nothing I say is a " +
@@ -203,7 +203,7 @@ export const KNOWLEDGE = [
 
 /** The permanent frame printed with every answer, whatever produced it. */
 export const MEDICAL_DISCLAIMER =
-  "MediCare's assistant gives general information only. It cannot diagnose, " +
+  "BookMyDoc's assistant gives general information only. It cannot diagnose, " +
   "prescribe, or read your medical records, and it is not a substitute for a " +
   "doctor. For anything about your own health, speak to a clinician.";
 
@@ -239,7 +239,7 @@ export const REFUSALS = [
     reason:
       "That request asks me to change how I behave, reveal internal " +
       "instructions, or reach into the system - so I have not answered it. I " +
-      "can only help with how MediCare works and with general healthcare " +
+      "can only help with how BookMyDoc works and with general healthcare " +
       "information.",
   },
 ];

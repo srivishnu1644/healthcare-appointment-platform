@@ -14,9 +14,8 @@
  * SSL is mandatory for any non-localhost host, so a Supabase connection
  * string cannot accidentally be used in plaintext.
  *
- * Pool sizing: DB_POOL_MAX defaults to 10, which is right for Supabase. The
- * bundled local PostgreSQL (scripts/local-postgres.js) serialises queries on
- * a single connection, so it needs DB_POOL_MAX=1 — the code issues
+ * Pool sizing: DB_POOL_MAX defaults to 10, which is right for Supabase. A
+ * single-connection local PostgreSQL needs DB_POOL_MAX=1 — the code issues
  * concurrent queries via Promise.all in a few places and would otherwise see
  * "Connection terminated unexpectedly".
  */
@@ -49,19 +48,19 @@ const buildConfig = () => {
   /* ---------------------------------------------------------------- *
    * Defence in depth: the local-only test guard.                      *
    *                                                                   *
-   * Every harness imports `scripts/local-db-guard.mjs` first, which  *
-   * applies the isolated local override at module evaluation -       *
-   * BEFORE this module is evaluated. This is the backstop for a      *
-   * script that did not, or imported them in the wrong order:        *
-   * `buildConfig()` runs at module-init, so an override applied      *
-   * afterwards is already too late.                                   *
+   * If something sets BOOKMYDOC_TEST_HARNESS=1, DATABASE_URL must be  *
+   * the authorised isolated local database or startup fails rather     *
+   * than silently running the application against a real one. It is   *
+   * the backstop for a harness that opts in without applying the       *
+   * override: `buildConfig()` runs at module-init, so an override      *
+   * applied afterwards would already be too late.                       *
    *                                                                   *
    * Gated on the explicit opt-in flag, so the application's own      *
    * behaviour - including running against a hosted database - is     *
-   * unchanged. This is a test control, not a product control.        *
+   * unchanged. This is a test control, not a product control.          *
    * ---------------------------------------------------------------- */
-  if (process.env.MEDICARE_TEST_HARNESS === "1") {
-    const allowed = "postgresql://postgres@127.0.0.1:5440/medicare_test";
+  if (process.env.BOOKMYDOC_TEST_HARNESS === "1") {
+    const allowed = "postgresql://postgres@127.0.0.1:5440/bookmydoc_test";
     if (url !== allowed) {
       throw new Error(
         [
@@ -78,7 +77,7 @@ const buildConfig = () => {
           "  required: " + allowed,
           "",
           "  Import local-db-guard.mjs before this module, or set:",
-          "    MEDICARE_TEST_HARNESS=1",
+          "    BOOKMYDOC_TEST_HARNESS=1",
           "",
         ].join("\n"),
       );
@@ -128,7 +127,7 @@ export const getPool = () => {
         "",
         "  Set it in server/.env — see server/.env.example.",
         "  Supabase:  DATABASE_URL=postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres",
-        "  Local:      DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/medicare",
+        "  Local:      DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/bookmydoc",
       ].join("\n"),
     );
   }

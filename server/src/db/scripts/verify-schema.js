@@ -361,13 +361,25 @@ const structuralChecks = async () => {
     console.log(`      ${r.c} enum types`);
   });
 
-  await check("RLS is enabled on every sensitive table", async () => {
-    const r = await one(`
+  await check("RLS is enabled on every table in public", async () => {
+    // Supabase grants the anon/authenticated roles table privileges by
+    // default, so a single table without RLS is readable on the database's
+    // HTTP surface. The invariant is "all of them", not "at least ten".
+    const missing = await rows(`
+      SELECT c.relname FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'public' AND c.relkind = 'r' AND NOT c.relrowsecurity
+       ORDER BY c.relname`);
+    if (missing.length > 0) {
+      throw new Error(
+        `${missing.length} table(s) without RLS: ${missing.map((r) => r.relname).join(", ")}`,
+      );
+    }
+    const total = await one(`
       SELECT count(*)::int AS c FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace
-       WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relrowsecurity`);
-    if (r.c < 10) throw new Error(`only ${r.c} tables`);
-    console.log(`      ${r.c} tables have RLS enabled with no permissive policies`);
+       WHERE n.nspname = 'public' AND c.relkind = 'r'`);
+    console.log(`      ${total.c} tables, every one with RLS enabled`);
   });
 
   await check("named indexes exist on the hot query paths", async () => {

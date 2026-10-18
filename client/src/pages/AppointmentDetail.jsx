@@ -39,10 +39,8 @@ import {
  *  treating doctor or admin) and returns 404 for anything the caller may  *
  *  not see, so this page never has to guess.                             *
  *                                                                       *
- *  `wait` is only returned to the parties, so it is absent for a stranger; *
- *  the queue block is rendered only when the API actually sent one.        *
- *  The list projection's `queuePosition` is always null, which is why the  *
- *  position here is read from `wait`, never from `appointment`.           *
+ *  `wait` — the queue position, returned only to the parties — is still in  *
+ *  the payload but is no longer rendered on this page.                      *
  * ------------------------------------------------------------------ */
 
 const MODE_LABEL = { video: "Video consultation", "in-person": "In person" };
@@ -99,13 +97,8 @@ export default function AppointmentDetail() {
     actionable && appointment.date === today && hasStarted(appointment),
   );
 
-  /* ---------------- queue ---------------- *
-   * Shown only when the API returned a wait block AND the visit has not
-   * finished: a "you are next" label on a completed visit would mislead. */
-  const wait = data?.wait || null;
-  const showQueue = Boolean(
-    wait && appointment && LIVE_STATUSES.includes(appointment.status),
-  );
+  /* The payload still carries a `wait` block (queue position for the
+     parties), but this page renders no queue card. */
 
   const doctor = data?.doctor || null;
   const facility = data?.facility || null;
@@ -134,7 +127,7 @@ export default function AppointmentDetail() {
   /* ---------------- not found / error ---------------- */
   if (loading) {
     return (
-      <div className="page">
+      <div className="page page-glass-bg">
         <div className="container stack" style={{ maxWidth: 820 }}>
           <SkeletonList rows={4} height={72} />
           <span className="sr-only" role="status">
@@ -147,7 +140,7 @@ export default function AppointmentDetail() {
 
   if (notFound) {
     return (
-      <div className="page">
+      <div className="page page-glass-bg">
         <div className="container" style={{ maxWidth: 820 }}>
           <div className="card">
             <EmptyState
@@ -168,7 +161,7 @@ export default function AppointmentDetail() {
 
   if (error || !appointment) {
     return (
-      <div className="page">
+      <div className="page page-glass-bg">
         <div className="container" style={{ maxWidth: 820 }}>
           <Alert tone="danger" title="Could not load this appointment">
             {error || "Something went wrong."}
@@ -206,7 +199,7 @@ export default function AppointmentDetail() {
   ].filter(([, v]) => v !== null && v !== undefined && v !== "");
 
   return (
-    <div className="page">
+    <div className="page page-glass-bg">
       <div className="container stack" style={{ maxWidth: 900 }}>
         {/* ---------------- header ---------------- */}
         <div>
@@ -358,30 +351,6 @@ export default function AppointmentDetail() {
               </Link>
             </div>
 
-            {/* queue — only when the API sent one for a live visit */}
-            {showQueue && (
-              <div className="card card-pad stack-sm">
-                <h4 style={{ margin: 0 }}>Queue</h4>
-                {wait.queuePosition ? (
-                  <div className="small">
-                    Your position:{" "}
-                    <strong>#{wait.queuePosition}</strong>
-                  </div>
-                ) : appointment?.queueState === "in-consultation" ? (
-                  // In the room, so there is no place in the line to show. The
-                  // server sends the state precisely so this is not blank.
-                  <div className="small">
-                    With the doctor now
-                  </div>
-                ) : null}
-                {wait.estimatedWaitLabel && (
-                  <div className="small muted">
-                    {wait.estimatedWaitLabel}
-                  </div>
-                )}
-              </div>
-            )}
-
             {/* doctor */}
             {doctor && (
               <div className="card card-pad stack-sm">
@@ -403,7 +372,7 @@ export default function AppointmentDetail() {
                   <div className="tiny muted">{doctor.qualification}</div>
                 )}
                 <Link
-                  to={`/doctors/${doctor.id}`}
+                  to={`/doctors/${encodeURIComponent(doctor.id)}`}
                   className="btn btn-secondary btn-block btn-sm"
                 >
                   View doctor profile

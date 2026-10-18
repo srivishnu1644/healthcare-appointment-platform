@@ -102,7 +102,7 @@ export default function AdminAppointments() {
   if (loading) return <Loading label="Loading appointments…" />;
 
   return (
-    <div className="page">
+    <div className="page page-glass-bg">
       <div className="container stack">
         <div className="page-head row-between row-wrap">
           <div>

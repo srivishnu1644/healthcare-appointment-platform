@@ -25,6 +25,10 @@ const toNotification = (r) =>
     createdAt: r.created_at,
     read: r.read_at !== null,
     readAt: r.read_at,
+    // Set when the reader dismissed it. The patient inbox filters these out;
+    // the admin log keeps them, because a message being dismissed says nothing
+    // about whether it was delivered.
+    deletedAt: r.deleted_at ?? null,
     results: r.results || [],
   };
 
@@ -33,6 +37,11 @@ const toNotification = (r) =>
  *
  * `patientId` is deliberately absent: Phase 1 restricted this to the
  * caller, and that check belongs in the controller, not here.
+ *
+ * Dismissed rows are excluded here rather than by the caller, so that every
+ * path into the inbox - the page, the header badge, an admin reading one
+ * patient's list - agrees about what "deleted" means. The admin platform-wide
+ * log (`listAll`) deliberately keeps them.
  */
 export const listForUser = async (userId, limit = 50) => {
   // Clamped on BOTH sides.
@@ -45,7 +54,7 @@ export const listForUser = async (userId, limit = 50) => {
   return (
     await rows(
       `SELECT n.id, n.user_id, n.appointment_id, n.event, n.title, n.body,
-              n.read_at, n.created_at,
+              n.read_at, n.created_at, n.deleted_at,
               u.full_name AS user_name,
               d.channel, d.destination AS email,
               (SELECT jsonb_agg(jsonb_build_object(
@@ -64,6 +73,7 @@ export const listForUser = async (userId, limit = 50) => {
                ORDER BY channel LIMIT 1
          ) d ON true
         WHERE n.user_id = $1
+          AND n.deleted_at IS NULL
         ORDER BY n.created_at DESC
         LIMIT ${safeLimit}`,
       [userId],
@@ -71,10 +81,11 @@ export const listForUser = async (userId, limit = 50) => {
   ).map(toNotification);
 };
 
-/** Unread count for the header badge. */
+/** Unread count for the header badge. Dismissed messages are not unread. */
 export const unreadCount = async (userId) => {
   const r = await one(
-    "SELECT count(*)::int AS c FROM notifications WHERE user_id = $1 AND read_at IS NULL",
+    `SELECT count(*)::int AS c FROM notifications
+      WHERE user_id = $1 AND read_at IS NULL AND deleted_at IS NULL`,
     [userId],
   );
   return r.c;
@@ -87,7 +98,7 @@ export const unreadCount = async (userId) => {
  * This ran an UPDATE with no RETURNING through `one()`, which yields no rows
  * and therefore `null` - so `r.count` threw and every call to this endpoint
  * answered 500 with nothing marked. `query()` plus `RETURNING` gives the driver
- * a real row count, exactly as `markOneReadCounted` below already does.
+ * a real row count, exactly as `setOneRead` below already does.
  */
 export const markAllRead = async (userId) => {
   const r = await query(
@@ -99,32 +110,129 @@ export const markAllRead = async (userId) => {
   return r.rowCount ?? 0;
 };
 
-export const markOneRead = async (id, userId) => {
-  await query(
-    "UPDATE notifications SET read_at = now() WHERE id = $1 AND user_id = $2 AND read_at IS NULL",
-    [id, userId],
+/**
+ * Set one notification's read state — in EITHER direction.
+ *
+ * `read: false` clears `read_at` rather than deleting anything, which is what
+ * makes a toggle cost the same as a mark. That is the whole point: swiping a
+ * message the reader has already seen is supposed to put it back in the unread
+ * pile, and it cannot do that while the server only has a "mark read" verb.
+ *
+ * One statement for both directions rather than two: the caller's id is part of
+ * the WHERE either way, so one caller can never read or un-read somebody else's
+ * notification — not by guessing an id, and not by reading one out of a log.
+ *
+ * Unlike the previous version there is no `AND read_at IS NULL` on the read
+ * path, and that is deliberate. It made "already read" indistinguishable from
+ * "not yours", so marking the same notification read twice answered 404 the
+ * second time while having changed nothing. The endpoint needs to say "not
+ * found" only about a row that genuinely is not the caller's.
+ *
+ * @param {string} id
+ * @param {string} userId
+ * @param {boolean} read
+ * @returns {Promise<{ok: true, read: boolean} | null>} null when the id is not
+ *        the caller's or does not exist. `read` is the state the row ended in.
+ */
+export const setOneRead = async (id, userId, read) => {
+  const r = await query(
+    `UPDATE notifications
+        SET read_at = CASE WHEN $3::boolean THEN now() ELSE NULL END
+      WHERE id = $1 AND user_id = $2
+      RETURNING id, read_at`,
+    [id, userId, Boolean(read)],
   );
+  const row = r.rows[0];
+  return row ? { ok: true, read: row.read_at !== null } : null;
 };
 
+/* ------------------------------------------------------------------ *
+ *  Deletion — soft, and reversible for as long as the undo window is  *
+ * ------------------------------------------------------------------ */
+
 /**
- * Mark one notification read, reporting whether this call was the one that did it.
+ * Dismiss one notification.
  *
- * `markOneRead` above cannot distinguish "marked" from "already read" or "not
- * yours", so the endpoint has no way to answer honestly. The ownership check is
- * the same WHERE clause either way - this only adds the RETURNING that makes the
- * outcome observable.
+ * A SWIPE, not a DELETE. Stamping `deleted_at` is what "removing" means; the row
+ * stays because undo has to be able to put it back, and it cannot be put back
+ * from the client - the list it was rendered in is the only copy of the display
+ * fields, and the delivery rows behind it were never sent to the client at all.
+ *
+ * Scoped by `user_id` in the WHERE, so an id belonging to somebody else is a
+ * no-op rather than a deletion, and the endpoint can answer 404 without having
+ * to check anything first.
  *
  * @returns {Promise<boolean>} false when the id is not the caller's, or was
- *        already read.
+ *        already dismissed.
  */
-export const markOneReadCounted = async (id, userId) => {
+export const removeOne = async (id, userId) => {
   const r = await query(
-    `UPDATE notifications SET read_at = now()
-      WHERE id = $1 AND user_id = $2 AND read_at IS NULL
+    `UPDATE notifications SET deleted_at = now()
+      WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
       RETURNING id`,
     [id, userId],
   );
   return (r.rowCount ?? 0) > 0;
+};
+
+/**
+ * Dismiss a user's notifications in bulk.
+ *
+ * `scope: "read"` clears only what they have already read, which is the
+ * everyday case - nobody empties an inbox to get back the one message they
+ * still have not opened. `"all"` is the explicit "remove everything".
+ *
+ * Returns the number dismissed, so the endpoint can tell the caller exactly
+ * what happened rather than a bare ok.
+ */
+export const removeAll = async (userId, { scope = "all" } = {}) => {
+  const onlyRead = scope === "read";
+  const r = await query(
+    `UPDATE notifications SET deleted_at = now()
+      WHERE user_id = $1
+        AND deleted_at IS NULL
+        AND ($2::boolean = false OR read_at IS NOT NULL)
+      RETURNING id`,
+    [userId, onlyRead],
+  );
+  return r.rowCount ?? 0;
+};
+
+/**
+ * Take a dismissal back.
+ *
+ * The whole point of the soft delete: undo is one UPDATE that un-stamps, not an
+ * INSERT that has to rebuild a row the client no longer holds in full. Returns
+ * false when the row is not the caller's or was never dismissed, so the
+ * endpoint can report a 404 honestly instead of a success that did nothing.
+ */
+export const restoreOne = async (id, userId) => {
+  const r = await query(
+    `UPDATE notifications SET deleted_at = NULL
+      WHERE id = $1 AND user_id = $2 AND deleted_at IS NOT NULL
+      RETURNING id`,
+    [id, userId],
+  );
+  return (r.rowCount ?? 0) > 0;
+};
+
+/**
+ * Undo a bulk dismissal by un-stamping everything currently dismissed.
+ *
+ * Not "the last N ids": the client's undo button has one job, which is to put
+ * back what it just took away. Every dismissed row belongs to one reader and
+ * there is no second reader to restore somebody else's mail by accident, so the
+ * broad statement is also the safest one - it cannot restore a row the user
+ * never dismissed.
+ */
+export const restoreAll = async (userId) => {
+  const r = await query(
+    `UPDATE notifications SET deleted_at = NULL
+      WHERE user_id = $1 AND deleted_at IS NOT NULL
+      RETURNING id`,
+    [userId],
+  );
+  return r.rowCount ?? 0;
 };
 
 /**
@@ -227,12 +335,21 @@ export const recordDelivery = async (notificationId, attempt) => {
   );
 };
 
-/** Platform-wide log for the admin notification screen. */
+/**
+ * Platform-wide log for the admin notification screen.
+ *
+ * Dismissed messages ARE included, unlike `listForUser`. This screen is the
+ * dispatch audit trail: it answers "did the platform send this, and to whom",
+ * and a patient swiping a message away changes nothing about whether it was
+ * sent. Hiding those rows would make the log quietly disagree with the SMS and
+ * email the clinic actually received.
+ */
 export const listAll = async (limit = 100) => {
   const safeLimit = Math.min(Number(limit) || 100, 500);
   return (
     await rows(
       `SELECT n.id, n.user_id, n.event, n.title, n.body, n.created_at, n.read_at,
+              n.deleted_at,
               u.full_name AS user_name, u.email, u.phone,
               d.channel, d.status,
               COALESCE((
@@ -456,8 +573,11 @@ export default {
   listForUser,
   unreadCount,
   markAllRead,
-  markOneRead,
-  markOneReadCounted,
+  setOneRead,
+  removeOne,
+  removeAll,
+  restoreOne,
+  restoreAll,
   create,
   recordDelivery,
   listAll,

@@ -1,16 +1,23 @@
 import { Suspense, lazy, useEffect } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 
-import { Header, Footer, homeFor } from "./components/Layout.jsx";
+import { Header, Footer, PrototypeNotice, homeFor } from "./components/Layout.jsx";
 import { Loading } from "./components/ui.jsx";
 import { useAuth } from "./context/AuthContext.jsx";
 import { useNotifications } from "./context/NotificationsContext.jsx";
+import ChatWidget from "./components/ChatWidget.jsx";
 
 // Eager: the landing page and the authentication screens are the critical path,
 // so they stay in the entry chunk and never wait on a network round trip.
 import PublicHome from "./pages/PublicHome.jsx";
 import Login from "./pages/Login.jsx";
 import Register from "./pages/Register.jsx";
+
+/** Renders the catch-all. Eager, not lazy: it is the route every unmatched URL
+ *  lands on, so lazy-loading it would put a spinner in front of the one page
+ *  whose whole job is to explain that nothing loaded. It costs about a kilobyte
+ *  in the entry chunk. */
+import NotFound from "./pages/NotFound.jsx";
 
 // Lazy: every route reached after that becomes its own chunk, fetched on the
 // first navigation to it. A patient who never opens the admin area never
@@ -22,7 +29,6 @@ const PatientDashboard = lazy(() => import("./pages/PatientDashboard.jsx"));
 const MyAppointments = lazy(() => import("./pages/MyAppointments.jsx"));
 const AppointmentDetail = lazy(() => import("./pages/AppointmentDetail.jsx"));
 const Notifications = lazy(() => import("./pages/Notifications.jsx"));
-const Assistant = lazy(() => import("./pages/Assistant.jsx"));
 const Profile = lazy(() => import("./pages/Profile.jsx"));
 
 const ProviderDashboard = lazy(() => import("./pages/ProviderDashboard.jsx"));
@@ -74,6 +80,38 @@ function GuestOnly({ children }) {
 }
 
 /* ------------------------------------------------------------------ *
+ *  Scroll restoration                                                 *
+ * ------------------------------------------------------------------ */
+
+/**
+ * Start a new page at its top.
+ *
+ * A single-page app does not get this for free: the browser restores the
+ * previous document's scroll offset on a real page load, but a client-side
+ * navigation reuses the same document, so arriving at a new route from the
+ * bottom of a long list leaves the viewport where the old page was scrolled to.
+ * Reading a row of that list's table then looks like a blank page.
+ *
+ * Keyed on `pathname` and NOT on the whole location: `/doctors/:id?book=1`
+ * switches the doctor profile between its overview and booking tabs, and that is
+ * the same page. Resetting scroll there would throw the visitor to the top of
+ * the tab they just opened.
+ *
+ * `instant` is deliberate. React Router's own scroll restoration animates,
+ * which turns every navigation into a visible glide from the old position; this
+ * is a jump to a known-good offset and should not be animated.
+ */
+function ScrollToTop() {
+  const { pathname } = useLocation();
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+  }, [pathname]);
+
+  return null;
+}
+
+/* ------------------------------------------------------------------ *
  *  App shell                                                         *
  * ------------------------------------------------------------------ */
 export default function App() {
@@ -84,22 +122,64 @@ export default function App() {
 
   // Land signed-in users on the dashboard for their role.
   useEffect(() => {
-    if (!booting && user) document.title = `MediCare · ${user.role} dashboard`;
+    if (!booting && user) document.title = `BookMyDoc · ${user.role} dashboard`;
   }, [user, booting]);
+
+  // The assistant helps people find care and understand their appointments, so
+  // it is the patient side of the product only: a doctor or admin signing in
+  // and the console they land on never see it. Signed-out visitors still get
+  // it on the public pages, where asking stays blocked until they sign in.
+  // Hidden while the session is being restored so staff never watch it appear
+  // for a frame before it is taken away again.
+  const showChat = !booting && (!user || user.role === "patient");
 
   return (
     <div
+      // The floating assistant is fixed to the bottom-right of the viewport,
+      // so it sits on top of the footer's last line. The shell says whether it
+      // is mounted and the footer reserves room accordingly - doctor and admin
+      // never render the widget, so they should not carry the empty space.
+      className={`app-shell${showChat ? " has-chat-widget" : ""}`}
       style={{ display: "flex", flexDirection: "column", minHeight: "100vh" }}
     >
       <Header unread={unread} />
 
       <main style={{ flex: 1 }}>
+        {/* Mounted above <Routes> so it sees the committed location. */}
+        <ScrollToTop />
         {/* One loading fallback for every lazy route. It sits inside <main> so
             the header and footer stay on screen while a chunk loads. */}
         <Suspense fallback={<Loading label="Loading page…" />}>
           <Routes>
           {/* ---------- public ---------- */}
-          <Route path="/" element={<PublicHome />} />
+          {/* The landing page is consumer marketing: how to book, who the
+              doctors are, why this is worth using. Staff do not book anything,
+              so showing it to them is showing them a sales page for a product
+              they already work inside. A signed-in doctor or admin who lands on
+              `/` - by typing it, by an old bookmark, by the brand logo - is
+              sent straight to their own console instead.
+
+              Patients are deliberately NOT redirected. They are the audience
+              the page is written for, and bouncing a patient off the marketing
+              page they chose to read would be the same mistake in reverse.
+
+              Waited on `booting` rather than redirecting from `user` alone: on
+              a cold load the session is not known yet, and redirecting on the
+              `!user` that comes back before the session restore resolves would
+              send a signed-in doctor to the public page for a frame, then back
+              again. */}
+          <Route
+            path="/"
+            element={
+              booting ? (
+                <Loading label="Restoring your session…" />
+              ) : user && user.role !== "patient" ? (
+                <Navigate to={homeFor(user.role)} replace />
+              ) : (
+                <PublicHome />
+              )
+            }
+          />
           <Route
             path="/login"
             element={
@@ -122,7 +202,7 @@ export default function App() {
           {/* Open to signed-out visitors: it only explains how the product works
               and cannot see or do anything on an account. Asking a question
               needs a session, which the page explains in place. */}
-          <Route path="/help" element={<Assistant />} />
+          {/* The assistant is now a floating widget on every page instead. */}
 
           {/* ---------- patient ---------- */}
           <Route
@@ -167,8 +247,15 @@ export default function App() {
           />
 
           {/* ---------- provider ---------- */}
+          {/* `/my-schedule`, not `/provider`. The nav has always called this
+              screen "My schedule", and the patient side already pairs a plain
+              route with a `My …` label (`/appointments` → "My appointments"),
+              so this follows a convention the app had rather than inventing
+              one. It also keeps the doctor's private area clearly distinct from
+              the public `/doctors/:id` profiles, which `/doctor` would have
+              put one letter away. */}
           <Route
-            path="/provider"
+            path="/my-schedule"
             element={
               <Protected roles={["doctor"]}>
                 <ProviderDashboard />
@@ -235,17 +322,27 @@ export default function App() {
           />
 
           {/* ---------- fallbacks ---------- */}
-          {/* Unknown URL: send a signed-in user to their own dashboard and an
-              anonymous visitor to the public landing page. */}
-          <Route
-            path="*"
-            element={<Navigate to={homeFor(user?.role)} replace />}
-          />
+          {/* An unknown URL renders the not-found page IN PLACE, keeping the
+              path the visitor asked for on screen. It used to redirect to the
+              role's home, which was silent: a mistyped URL, a stale bookmark and
+              a broken link all looked identical to "nothing is here", with no
+              way for the visitor to tell a typo from a dead link.
+
+              `booting` matters — NotFound waits for the session restore before
+              offering a destination, so a signed-in visitor is never briefly
+              shown a signed-out landing page as their way out. */}
+          <Route path="*" element={<NotFound />} />
         </Routes>
         </Suspense>
       </main>
 
       <Footer />
+
+      {/* Said once on arrival rather than left in the footer to be scrolled
+          to. Renders above the assistant, which it does not gate. */}
+      <PrototypeNotice />
+
+      {showChat && <ChatWidget />}
     </div>
   );
 }

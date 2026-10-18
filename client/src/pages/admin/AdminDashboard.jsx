@@ -64,7 +64,7 @@ export default function AdminDashboard() {
   if (loading) return <Loading label="Loading analytics…" />;
   if (error) {
     return (
-      <div className="page">
+      <div className="page page-glass-bg">
         <div className="container">
           <Alert tone="danger">
             {error}{" "}
@@ -92,7 +92,7 @@ export default function AdminDashboard() {
   } = data;
 
   return (
-    <div className="page">
+    <div className="page page-glass-bg">
       <div className="container stack-lg">
         <div className="page-head row-between">
           <div>

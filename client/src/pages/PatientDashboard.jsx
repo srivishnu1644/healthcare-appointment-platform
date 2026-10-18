@@ -1,18 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Link } from "react-router-dom";
 
-import api from "../api/client";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useNotifications } from "../context/NotificationsContext.jsx";
 import useAppointments from "../hooks/useAppointments.js";
-import { DoctorCard } from "../components/DoctorCard.jsx";
 import AppointmentCard from "../features/appointments/AppointmentCard.jsx";
 import SymptomChecker from "../components/SymptomChecker.jsx";
 import {
   Alert,
   Avatar,
   EmptyState,
-  SkeletonCard,
   SkeletonList,
   Stat,
   StatusBadge,
@@ -39,7 +36,6 @@ import {
  *      so the browser's timezone cannot misfile an appointment.              *
  *    * GET /notifications     via the shared NotificationsProvider. This page *
  *      reads that one copy; it does not start a poller of its own.            *
- *    * GET /doctors/recommended                                           *
  *                                                                       *
  *  NOTHING INVENTED. There is no queue position in the list projection and  *
  *  no meeting URL anywhere in the API, so neither is shown. There is no      *
@@ -95,30 +91,6 @@ export default function PatientDashboard() {
     refresh: reloadAppointments,
   } = useAppointments();
 
-  /* ---------------- recommendations ---------------- */
-  // Fetched here rather than through a shared hook because nothing else needs
-  // it, but the failure is surfaced with a retry instead of being swallowed.
-  const [recommended, setRecommended] = useState([]);
-  const [recLoading, setRecLoading] = useState(true);
-  const [recError, setRecError] = useState(null);
-
-  const loadRecommended = useCallback(() => {
-    setRecLoading(true);
-    api
-      .recommended()
-      .then((res) => {
-        setRecommended((res?.recommendations || []).slice(0, 6));
-        setRecError(null);
-      })
-      .catch((err) => {
-        setRecommended([]);
-        setRecError(err.message || "Could not load recommendations");
-      })
-      .finally(() => setRecLoading(false));
-  }, []);
-
-  useEffect(loadRecommended, [loadRecommended]);
-
   /* ---------------- derived figures ---------------- */
   // Only genuinely completed visits. A booked or scheduled appointment is not
   // a completed visit and is never counted as one here.
@@ -146,22 +118,19 @@ export default function PatientDashboard() {
       : "You have no upcoming appointments.";
 
   return (
-    <div className="page">
+    <div className="page page-glass-bg">
       <div className="container stack-lg">
         {/* ---------------- welcome ---------------- */}
-        <div className="page-head row-between">
-          <div className="row">
-            <Avatar name={user.name} color={colorFrom(user.email)} size="lg" />
-            <div>
-              <h1 style={{ marginBottom: "0.15rem" }}>Hello, {firstName}</h1>
-              <p className="small muted" style={{ margin: 0 }}>
-                {subtitle}
-              </p>
-            </div>
+        <div className="glass-panel row-between">
+          <div>
+          <h1 style={{ marginBottom: "0.15rem" }}>Dashboard</h1>
+          <p className="small muted" style={{ margin: 0 }}>
+            Welcome back, {firstName || "there"} — {subtitle}
+          </p>
           </div>
           <button
             type="button"
-            className="btn btn-secondary btn-sm hide-sm"
+            className="btn btn-glass btn-sm hide-sm"
             onClick={reloadAppointments}
             disabled={loading}
           >
@@ -187,34 +156,32 @@ export default function PatientDashboard() {
 
         {/* ---------------- summary ---------------- */}
         <div className="grid grid-4">
-          <Stat
-            label="Upcoming visits"
-            value={loading ? "—" : num(upcoming.length)}
-            sub={loading ? "" : upcoming.length === 1 ? "1 booked" : `${num(upcoming.length)} booked`}
-          />
-          <Stat
-            label="Next visit"
-            value={loading ? "—" : next ? relativeDay(next.date) : "None"}
-            sub={loading ? "" : next ? next.doctorName : "Book a slot to get started"}
-            tone={next ? "brand" : undefined}
-          />
-          <Stat
-            label="Completed visits"
-            value={loading ? "—" : num(completedCount)}
-            sub={loading ? "" : cancelledCount ? `${num(cancelledCount)} cancelled` : "All time"}
-          />
-          <Stat
-            label="Unread notifications"
-            value={loading ? "—" : num(unread)}
-            sub={loading ? "" : unread ? "Tap a notification to read it" : "You're all caught up"}
-            tone={unread ? "warning" : undefined}
-          />
+          <div className="glass-stat" title="Upcoming appointments">
+            <div className="stat-label">Upcoming</div>
+            <div className="num">{loading ? "—" : num(upcoming.length)}</div>
+            <div className="stat-sub">{loading ? "" : upcoming.length === 1 ? "1 booked" : `${num(upcoming.length)} booked`}</div>
+          </div>
+          <div className="glass-stat" title="Next visit">
+            <div className="stat-label">Next visit</div>
+            <div className="num" style={{ fontSize: "1.15rem" }}>{loading ? "—" : next ? relativeDay(next.date) : "None"}</div>
+            <div className="stat-sub">{loading ? "" : next ? next.doctorName : "Book a slot to get started"}</div>
+          </div>
+          <div className="glass-stat" title="Completed visits">
+            <div className="stat-label">Completed</div>
+            <div className="num">{loading ? "—" : num(completedCount)}</div>
+            <div className="stat-sub">{loading ? "" : cancelledCount ? `${num(cancelledCount)} cancelled` : "All time"}</div>
+          </div>
+          <div className="glass-stat" title="Unread notifications">
+            <div className="stat-label">Unread</div>
+            <div className="num">{loading ? "—" : num(unread)}</div>
+            <div className="stat-sub">{loading ? "" : unread ? "Tap a notification to read it" : "You're all caught up"}</div>
+          </div>
         </div>
 
         <div className="split">
           <div className="stack">
             {/* ---------------- next appointment ---------------- */}
-            <div className="card">
+            <div className="glass-card card">
               <div className="card-head">
                 <h3>Next appointment</h3>
                 {next && <StatusBadge status={next.status} />}
@@ -279,13 +246,13 @@ export default function PatientDashboard() {
 
                     <div className="row row-wrap" style={{ gap: "0.5rem" }}>
                       <Link
-                        to={`/appointments/${next.id}`}
+                        to={`/appointments/${encodeURIComponent(next.id)}`}
                         className="btn btn-primary btn-sm"
                       >
                         Manage appointment
                       </Link>
                       <Link
-                        to={`/doctors/${next.doctorId}`}
+                        to={`/doctors/${encodeURIComponent(next.doctorId)}`}
                         className="btn btn-secondary btn-sm"
                       >
                         View doctor
@@ -302,7 +269,7 @@ export default function PatientDashboard() {
             </div>
 
             {/* ---------------- recent appointments ---------------- */}
-            <div className="card">
+            <div className="glass-card card">
               <div className="card-head">
                 <h3>Recent appointments</h3>
                 <Link to="/appointments" className="btn btn-ghost btn-sm">
@@ -326,7 +293,7 @@ export default function PatientDashboard() {
                       key={a.id}
                       appointment={a}
                       variant="compact"
-                      to={`/appointments/${a.id}`}
+                      to={`/appointments/${encodeURIComponent(a.id)}`}
                       trailing={
                         <>
                           {formatDay(a.date)} · {relativeDay(a.date)}
@@ -339,7 +306,7 @@ export default function PatientDashboard() {
 
             {/* ---------------- recent activity ---------------- */}
             {notifications.length > 0 && (
-              <div className="card">
+              <div className="glass-card card">
                 <div className="card-head">
                   <h3>Recent activity</h3>
                   <div className="row" style={{ gap: "0.4rem" }}>
@@ -388,7 +355,7 @@ export default function PatientDashboard() {
           {/* ---------------- sidebar ---------------- */}
           <div className="stack sticky-side">
             <div
-              className="card card-pad stack-sm"
+              className="glass-card card card-pad stack-sm"
               style={{
                 background:
                   "linear-gradient(135deg, var(--brand-700), var(--brand-900))",
@@ -412,7 +379,7 @@ export default function PatientDashboard() {
               </Link>
             </div>
 
-            <div className="card card-pad stack-sm">
+            <div className="glass-card card card-pad stack-sm">
               <h4 style={{ margin: 0 }}>Quick actions</h4>
               <Link to="/appointments" className="btn btn-secondary btn-block">
                 📅 My appointments
@@ -427,43 +394,6 @@ export default function PatientDashboard() {
 
             <SymptomChecker />
           </div>
-        </div>
-
-        {/* ---------------- recommended doctors ---------------- */}
-        <div>
-          <div className="section-title">
-            <h2>Recommended for you</h2>
-            <Link to="/doctors" className="btn btn-ghost btn-sm">
-              See all →
-            </Link>
-          </div>
-
-          {recError ? (
-            <Alert tone="danger" title="Could not load recommendations">
-              {recError}
-              <div style={{ marginTop: "0.65rem" }}>
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-sm"
-                  onClick={loadRecommended}
-                >
-                  Try again
-                </button>
-              </div>
-            </Alert>
-          ) : recLoading ? (
-            <div className="grid grid-auto">
-              {Array.from({ length: 3 }).map((_, i) => (
-                <SkeletonCard key={i} />
-              ))}
-            </div>
-          ) : recommended.length > 0 ? (
-            <div className="grid grid-auto">
-              {recommended.map((d) => (
-                <DoctorCard key={d.id} doctor={d} showMatch />
-              ))}
-            </div>
-          ) : null}
         </div>
       </div>
     </div>

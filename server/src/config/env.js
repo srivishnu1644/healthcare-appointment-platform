@@ -67,7 +67,7 @@ const DEFAULTS = {
   JWT_EXPIRES_IN: "15m",
   CORS_ORIGIN: "http://localhost:5173",
   GEMINI_MODEL: "gemini-2.0-flash",
-  NOTIFICATION_FROM_EMAIL: "notifications@medicare.demo",
+  NOTIFICATION_FROM_EMAIL: "notifications@bookmydoc.demo",
 };
 
 for (const [key, fallback] of Object.entries(DEFAULTS)) {
@@ -186,7 +186,7 @@ if (IS_PROD && !PROVIDED.has("CORS_ORIGIN")) {
       "[env] FATAL: CORS_ORIGIN is required in production.",
       "",
       "  Set it to your deployed frontend origin:",
-      "    CORS_ORIGIN=https://medicare.vercel.app",
+      "    CORS_ORIGIN=https://bookmydoc.vercel.app",
       "",
     ].join("\n"),
   );

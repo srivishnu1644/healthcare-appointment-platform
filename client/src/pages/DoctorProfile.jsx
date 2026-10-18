@@ -4,7 +4,7 @@ import api from "../api/client";
 import { BookingPanel } from "../components/DoctorCard.jsx";
 import {
   Alert,
-  Avatar,
+  DoctorPhoto,
   EmptyState,
   Loading,
   ProgressBar,
@@ -44,6 +44,13 @@ export default function DoctorProfile() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  const goBook = () => {
+    setTab("book");
+    document
+      .getElementById("doc-profile-tabs")
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   if (loading) return <Loading label="Loading doctor profile…" />;
 
   if (error || !data?.doctor) {
@@ -71,30 +78,38 @@ export default function DoctorProfile() {
     upcomingAppointments,
     stats,
   } = data;
-  const nextSlot = availability?.find((a) => a.nextAvailableSlot);
+
+  const facts = [
+    doctor.rating ? `⭐ ${doctor.rating} · ${doctor.reviewCount ?? 0} reviews` : null,
+    doctor.experience ? `🕐 ${doctor.experience} yrs experience` : null,
+    facility
+      ? `📍 ${facility.name}, ${facility.city}`
+      : [doctor.qualification, doctor.facilityName].filter(Boolean).join(" · ") || null,
+    doctor.languages?.length ? `🗣 ${doctor.languages.join(", ")}` : null,
+  ].filter(Boolean);
 
   return (
-    <div className="page">
+    <div className="page doc-profile-page">
       <div className="container stack">
         <Link
           to="/doctors"
           className="btn btn-ghost btn-sm"
           style={{ alignSelf: "flex-start" }}
         >
-          ← All doctors
+          ← Back to search
         </Link>
 
-        {/* ---------- header ---------- */}
-        <div className="card card-pad">
-          <div
-            className="row row-wrap"
-            style={{ alignItems: "flex-start", gap: "1.15rem" }}
-          >
-            <Avatar name={doctor.name} color={doctor.imageColor} size="xl" />
+        {/* ---------- profile header ---------- */}
+        <div className="card doc-profile-cover">
+          <div className="doc-profile-head">
+            <DoctorPhoto
+              doctor={doctor}
+              size="xl"
+              className="doc-profile-photo"
+            />
 
-            <div style={{ flex: 1, minWidth: 240 }}>
+            <div className="doc-profile-info">
               <div className="row row-wrap" style={{ gap: "0.5rem" }}>
-                <h1 style={{ margin: 0 }}>{doctor.name}</h1>
                 {doctor.isAcceptingNew ? (
                   <span className="badge badge-success">
                     <span className="dot dot-pulse" /> Accepting patients
@@ -102,56 +117,24 @@ export default function DoctorProfile() {
                 ) : (
                   <span className="badge">Not accepting</span>
                 )}
+                <span className="badge badge-brand">{doctor.specialtyName}</span>
               </div>
-              <div className="small muted">{doctor.specialtyName}</div>
-              <div className="small muted">
-                {doctor.qualification} · {doctor.experience} years experience
-              </div>
-
-              <div
-                className="row row-wrap small"
-                style={{ gap: "0.85rem", marginTop: "0.5rem" }}
-              >
-                <span>
-                  ⭐ <strong>{doctor.rating}</strong> ({doctor.reviewCount}{" "}
-                  reviews)
-                </span>
-                <span className="bold">{currency(doctor.consultationFee)}</span>
-                <span className="muted">{doctor.languages?.join(", ")}</span>
+              <h1 className="doc-profile-name">{doctor.name}</h1>
+              <div className="doc-profile-facts">
+                {facts.map((f) => (
+                  <span key={f} className="doc-profile-fact">
+                    {f}
+                  </span>
+                ))}
               </div>
             </div>
 
-            <div style={{ minWidth: 210 }}>
-              {nextSlot ? (
-                <div
-                  className="alert alert-success"
-                  style={{ padding: "0.6rem 0.8rem" }}
-                >
-                  <span>🕐</span>
-                  <div className="small">
-                    <strong>Next available</strong>
-                    <div>
-                      {formatDay(nextSlot.nextAvailableSlot.date)} at{" "}
-                      {formatTime(nextSlot.nextAvailableSlot.time)}
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div
-                  className="alert alert-warning"
-                  style={{ padding: "0.6rem 0.8rem" }}
-                >
-                  <span>⚠️</span>
-                  <div className="small">
-                    No open slots in the next two weeks
-                  </div>
-                </div>
-              )}
+            <div className="doc-profile-cta">
               <button
                 type="button"
-                className="btn btn-primary btn-block"
-                style={{ marginTop: "0.6rem" }}
-                onClick={() => setTab("book")}
+                className="btn btn-primary"
+                onClick={goBook}
+                disabled={!doctor.isAcceptingNew}
               >
                 Book appointment
               </button>
@@ -159,15 +142,17 @@ export default function DoctorProfile() {
           </div>
         </div>
 
-        <Tabs
-          tabs={[
-            { key: "overview", label: "Overview" },
-            { key: "book", label: "Book" },
-            { key: "slots", label: "Availability" },
-          ]}
-          active={tab}
-          onChange={setTab}
-        />
+        <div id="doc-profile-tabs">
+          <Tabs
+            tabs={[
+              { key: "overview", label: "Overview" },
+              { key: "book", label: "Book" },
+              { key: "slots", label: "Availability" },
+            ]}
+            active={tab}
+            onChange={setTab}
+          />
+        </div>
 
         <div className="split">
           <div className="stack">
@@ -176,6 +161,35 @@ export default function DoctorProfile() {
                 <div className="card card-pad">
                   <h3>About</h3>
                   <p className="small">{doctor.bio}</p>
+                  {services?.length > 0 && (
+                    <>
+                      <div className="divider" />
+                      <h4 style={{ marginBottom: "0.5rem" }}>Specializations</h4>
+                      <div className="mock-pills">
+                        {services.map((s) => (
+                          <span key={s.id} className="oris-chip">{s.name}</span>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                  <div className="divider" />
+                  <h4 style={{ marginBottom: "0.5rem" }}>Consultation details</h4>
+                  <div className="doc-profile-details">
+                    <div className="doc-profile-detail">
+                      <span aria-hidden="true">💰</span>
+                      <div>
+                        <div className="bold">{currency(doctor.consultationFee)}</div>
+                        <div className="tiny muted">Consultation fee</div>
+                      </div>
+                    </div>
+                    <div className="doc-profile-detail">
+                      <span aria-hidden="true">⏱</span>
+                      <div>
+                        <div className="bold">{services?.[0]?.duration ?? 30} mins</div>
+                        <div className="tiny muted">Average consultation</div>
+                      </div>
+                    </div>
+                  </div>
                   <div className="divider" />
                   <div className="grid grid-3">
                     <Stat
@@ -225,29 +239,31 @@ export default function DoctorProfile() {
 
                 {facility && (
                   <div className="card card-pad">
-                    <h3>Location</h3>
-                    <div className="stack-sm">
+                    <h3>Clinic location</h3>
+                    <div className="doc-profile-location">
                       <div className="row">
-                        <span>🏥</span>
+                        <span aria-hidden="true">🏥</span>
                         <div>
                           <div className="small bold">{facility.name}</div>
                           <div className="tiny muted">{facility.type}</div>
                         </div>
                       </div>
                       <div className="row">
-                        <span>📍</span>
+                        <span aria-hidden="true">📍</span>
                         <div className="small">
                           {facility.address}, {facility.city}
                         </div>
                       </div>
                       <div className="row">
-                        <span>🕘</span>
+                        <span aria-hidden="true">🕘</span>
                         <div className="small">{facility.openHours}</div>
                       </div>
                       {facility.queueEnabled && (
                         <div className="row">
-                          <span>🚶</span>
-                          <div className="small">Walk-in queue supported</div>
+                          <span aria-hidden="true">🚶</span>
+                          <div className="small">
+                            Walk-in queue supported — check in on arrival
+                          </div>
                         </div>
                       )}
                     </div>
@@ -259,7 +275,12 @@ export default function DoctorProfile() {
             {tab === "book" && (
               <div className="card">
                 <div className="card-head">
-                  <h3>Book an appointment</h3>
+                  <div>
+                    <h3>Book an appointment</h3>
+                    <p className="small muted" style={{ margin: 0 }}>
+                      With {doctor.name} · {currency(doctor.consultationFee)}
+                    </p>
+                  </div>
                 </div>
                 <div className="card-body">
                   <BookingPanel
@@ -274,12 +295,17 @@ export default function DoctorProfile() {
             {tab === "slots" && (
               <div className="card">
                 <div className="card-head">
-                  <h3>Next 14 days</h3>
+                  <div>
+                    <h3>Availability</h3>
+                    <p className="small muted" style={{ margin: 0 }}>
+                      Open slots across the next 14 days
+                    </p>
+                  </div>
                 </div>
                 <div className="card-body stack">
                   {availability?.length ? (
                     availability.map((d) => (
-                      <div key={d.date} className="stack-sm">
+                      <div key={d.date} className="doc-profile-day">
                         <div className="row-between">
                           <strong className="small">
                             {formatDay(d.date)}{" "}
@@ -323,28 +349,38 @@ export default function DoctorProfile() {
             )}
           </div>
 
-          {/* ---------- sidebar ---------- */}
+          {/* ---------- sticky booking summary ---------- */}
           <div className="stack sticky-side">
-            <div className="card card-pad stack-sm">
-              <h4 style={{ margin: 0 }}>Consultation</h4>
-              <div className="row-between">
-                <span className="small muted">Fee</span>
-                <strong>{currency(doctor.consultationFee)}</strong>
+            <div className="card card-pad doc-profile-bookcard">
+              <div className="tiny muted bold doc-profile-bookcard-eyebrow">
+                BOOK A VISIT
               </div>
-              <div className="row-between">
-                <span className="small muted">Modes</span>
-                <span className="row" style={{ gap: "0.3rem" }}>
-                  <span className="badge badge-brand">In person</span>
-                  <span className="badge badge-violet">Video</span>
-                </span>
+              <div className="doc-profile-fee">
+                {currency(doctor.consultationFee)}
               </div>
-              <button
-                type="button"
-                className="btn btn-primary btn-block"
-                onClick={() => setTab("book")}
-              >
-                Book now
-              </button>
+              <div className="tiny muted">per consultation</div>
+              <div className="divider" />
+              <div className="stack-sm small">
+                <div className="row-between">
+                  <span className="muted">Availability</span>
+                  <strong>Live slots</strong>
+                </div>
+                <div className="row-between">
+                  <span className="muted">Modes</span>
+                  <strong>In-person &amp; video</strong>
+                </div>
+                <div className="row-between">
+                  <span className="muted">Status</span>
+                  {doctor.isAcceptingNew ? (
+                    <span className="badge badge-success">Accepting</span>
+                  ) : (
+                    <span className="badge">Not accepting</span>
+                  )}
+                </div>
+              </div>
+              <p className="tiny muted center" style={{ marginTop: "0.6rem" }}>
+                Slots update in real time.
+              </p>
             </div>
 
             {upcomingAppointments?.length > 0 && (

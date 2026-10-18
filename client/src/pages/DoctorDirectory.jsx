@@ -125,17 +125,8 @@ export default function DoctorDirectory() {
     ).length + (search ? 1 : 0);
 
   return (
-    <div className="page">
+    <div className="page page-glass-bg">
       <div className="container">
-        <div className="page-head">
-          <h1>Find a doctor</h1>
-          <p>
-            {loading
-              ? "Searching…"
-              : `${num(total)} specialist(s) match your filters`}
-          </p>
-        </div>
-
         <div className="split-left">
           {/* ---------------- filters ---------------- */}
           <aside className="card card-pad stack sticky-side">
@@ -167,7 +158,7 @@ export default function DoctorDirectory() {
 
             <div className="field">
               <label className="label" htmlFor="f-spec">
-                Specialty
+                Specialization
               </label>
               <select
                 id="f-spec"
@@ -211,7 +202,7 @@ export default function DoctorDirectory() {
 
             <div className="field">
               <label className="label" htmlFor="f-fee">
-                Max consultation fee
+                Fees Range
               </label>
               <input
                 id="f-fee"
@@ -259,7 +250,7 @@ export default function DoctorDirectory() {
 
             <div className="field">
               <label className="label" htmlFor="f-mode">
-                Consultation mode
+                Consultation Type
               </label>
               <select
                 id="f-mode"
@@ -286,12 +277,17 @@ export default function DoctorDirectory() {
           {/* ---------------- results ---------------- */}
           <div className="stack">
             <div className="row-between">
-              <span className="small muted">
-                {loading ? "Loading…" : `${num(doctors.length)} shown`}
-              </span>
+              <div>
+                <h1 style={{ margin: 0 }}>Doctors</h1>
+                <p className="small muted" style={{ margin: 0 }}>
+                  {loading
+                    ? "Searching…"
+                    : `Found ${num(total)} doctors`}
+                </p>
+              </div>
               <div className="row" style={{ gap: "0.5rem" }}>
                 <label className="small muted" htmlFor="sort">
-                  Sort
+                  Sort by:
                 </label>
                 <select
                   id="sort"
@@ -312,9 +308,9 @@ export default function DoctorDirectory() {
             {error && <Alert tone="danger">{error}</Alert>}
 
             {loading ? (
-              <div className="grid grid-auto">
-                {Array.from({ length: 6 }).map((_, i) => (
-                  <SkeletonCard key={i} height={170} />
+              <div className="stack">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <SkeletonCard key={i} height={150} />
                 ))}
               </div>
             ) : doctors.length === 0 ? (
@@ -335,7 +331,7 @@ export default function DoctorDirectory() {
                 />
               </div>
             ) : (
-              <div className="grid grid-auto">
+              <div className="stack">
                 {doctors.map((d) => (
                   <DoctorCard key={d.id} doctor={d} />
                 ))}

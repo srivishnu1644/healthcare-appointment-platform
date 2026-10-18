@@ -56,6 +56,20 @@ const APPOINTED = `
 `;
 
 /**
+ * Whether the slot has ever been booked — any appointment status at all.
+ *
+ * Not the same question as `has_appointment`, and deliberately stricter. The
+ * `appointments.slot_id` foreign key is ON DELETE RESTRICT, so a slot that was
+ * booked once cannot be removed even after that appointment is cancelled: the
+ * row is the audit record of a visit that actually happened. `isBooked`
+ * therefore cannot decide this, and the UI must not offer to delete a slot on
+ * the strength of it.
+ */
+const HAS_HISTORY = `
+  EXISTS (SELECT 1 FROM appointments a WHERE a.slot_id = sl.id) AS has_history
+`;
+
+/**
  * Shape a slot row into the camelCase object the API always returned.
  *
  * `appointmentId` is intentionally absent: the JSON model kept a bidirectional
@@ -172,7 +186,7 @@ export const list = async ({ limit, offset, ...filters } = {}) => {
       : ` LIMIT ${Number(limit)} OFFSET ${Number(offset) || 0}`;
 
   const result = await rows(
-    `SELECT ${SLOT_SELECT}, ${QUEUE_COUNT}, ${APPOINTED}
+    `SELECT ${SLOT_SELECT}, ${QUEUE_COUNT}, ${APPOINTED}, ${HAS_HISTORY}
        FROM slots sl
        ${clause}
        ORDER BY sl.starts_at${paging}`,
@@ -183,6 +197,7 @@ export const list = async ({ limit, offset, ...filters } = {}) => {
     ...toSlot(r),
     // Reported rather than derived from status, so "booked" is not a claim.
     isBooked: r.has_appointment,
+    isDeletable: !r.has_history,
   }));
 };
 
@@ -205,7 +220,7 @@ export const countMatching = async (filters = {}) => {
  */
 export const findById = async (id) => {
   const r = await findOne(
-    `SELECT ${SLOT_SELECT}, ${QUEUE_COUNT}, ${APPOINTED},
+    `SELECT ${SLOT_SELECT}, ${QUEUE_COUNT}, ${APPOINTED}, ${HAS_HISTORY},
             u.full_name AS doctor_name,
             f.name    AS facility_name, f.city AS facility_city
        FROM slots sl
@@ -222,6 +237,7 @@ export const findById = async (id) => {
     facilityName: r.facility_name,
     facilityCity: r.facility_city,
     isBooked: r.has_appointment,
+    isDeletable: !r.has_history,
   };
 };
 
@@ -622,6 +638,57 @@ export const release = async (id, status = "available", tx = null) => {
 
 export const count = async () => one("SELECT count(*)::int AS c FROM slots");
 
+/* ------------------------------------------------------------------ *
+ *  Delete                                                              *
+ * ------------------------------------------------------------------ */
+
+/**
+ * Slots that cannot be removed, and why.
+ *
+ * `appointments.slot_id` is ON DELETE RESTRICT, so any appointment row at all —
+ * live, completed or cancelled — makes its slot undeletable. The cancelled case
+ * is the one worth stating plainly: the appointment is no longer a booking, but
+ * the row is the record that it happened, and deleting the slot to tidy up a
+ * calendar must not take a patient's visit history with it.
+ *
+ * Returned rather than thrown so the caller can decide: the service refuses the
+ * whole request, but it needs the offending times by name to do that usefully.
+ */
+export const findUndeletable = async (doctorId, ids) => {
+  const r = await rows(
+    `SELECT sl.id, ${DATE_EXPR("sl")} AS date, ${TIME_EXPR("sl")} AS local_time
+       FROM slots sl
+      WHERE sl.id = ANY($1::text[])
+        AND sl.doctor_id = $2
+        AND EXISTS (SELECT 1 FROM appointments a WHERE a.slot_id = sl.id)
+      ORDER BY sl.starts_at`,
+    [ids, doctorId],
+  );
+  return r;
+};
+
+/**
+ * Remove slots outright.
+ *
+ * All-or-nothing by design: the caller has already established that none of
+ * these ids is referenced (see `findUndeletable`), and the `doctor_id`
+ * predicate keeps a request for one doctor's slots from ever reaching another's
+ * rows even if a caller passes an id it does not own. `queue_entries` cascades,
+ * so waiting entries go with the slot.
+ *
+ * `RESTRICT` remains the backstop: if an appointment lands between the check
+ * above and this statement, PostgreSQL raises rather than orphaning the row.
+ */
+export const deleteByIds = async (doctorId, ids) => {
+  const r = await rows(
+    `DELETE FROM slots sl
+      WHERE sl.id = ANY($1::text[]) AND sl.doctor_id = $2
+      RETURNING sl.id, ${DATE_EXPR("sl")} AS date, ${TIME_EXPR("sl")} AS local_time`,
+    [ids, doctorId],
+  );
+  return r;
+};
+
 export default {
   list,
   countMatching,
@@ -637,5 +704,7 @@ export default {
   update,
   setStatus,
   release,
+  findUndeletable,
+  deleteByIds,
   count,
 };

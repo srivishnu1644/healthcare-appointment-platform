@@ -76,13 +76,16 @@ export default function SymptomChecker() {
 
   const submit = async (e) => {
     e.preventDefault();
+    // While the confirmation panel is open, the choice belongs to its buttons:
+    // a stray Enter key must not transmit without an answer.
+    if (confirming) return;
     if (text.trim().length < 3) {
       setError("Please describe your symptoms in a few more words.");
       return;
     }
     // Ask first, transmit second - and only when something would actually be sent
     // somewhere else.
-    if (!confirming && sendsRemotely) {
+    if (sendsRemotely) {
       setConfirming(true);
       return;
     }
@@ -125,13 +128,14 @@ export default function SymptomChecker() {
     }[result?.urgency] || "brand";
 
   return (
-    <div className="card">
-      <div className="card-head">
-        <div>
-          <h3>🤖 AI symptom checker</h3>
+    <div className="card sym-checker">
+      <div className="sym-head">
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="tiny muted bold sym-eyebrow">AI-ASSISTED TRIAGE</div>
+          <h3>Symptom checker</h3>
           <p className="small muted" style={{ margin: 0 }}>
-            Describe how you feel and we&apos;ll suggest the right department
-            and doctors.
+            Describe how you feel — we&apos;ll point you to the right
+            department and doctors.
           </p>
         </div>
         {result?.provider && (
@@ -146,22 +150,10 @@ export default function SymptomChecker() {
           <>
             {error && <Alert tone="danger">{error}</Alert>}
 
-            {/* The disclosure is stated before the box, not after the result. */}
-            {sendsRemotely && (
-              <Alert tone="info" title="Before you submit">
-                <span className="small">
-                  If you submit this, the description you write - and the age, if
-                  you give one - will be sent to Google&apos;s Gemini AI service so
-                  it can suggest a department. Your name, account, appointments
-                  and medical records are never included.
-                </span>
-              </Alert>
-            )}
-
             {confirming && (
               <Alert tone="warning" title="Send this to an AI service?">
                 <span className="small">
-                  Your description will leave MediCare and be processed by
+                  Your description will leave BookMyDoc and be processed by
                   Google. You can type something less specific instead, or go
                   back and edit it.
                 </span>
@@ -175,8 +167,9 @@ export default function SymptomChecker() {
                     Go back and edit
                   </button>
                   <button
-                    type="submit"
+                    type="button"
                     className="btn btn-primary btn-sm"
+                    onClick={() => runTriage(true)}
                     disabled={busy}
                   >
                     {busy ? <Spinner /> : "Yes, send it"}
@@ -192,18 +185,16 @@ export default function SymptomChecker() {
                 </label>
                 <textarea
                   id="symptoms"
-                  className="textarea"
+                  className="textarea sym-textarea"
                   placeholder="e.g. I have had chest pain and shortness of breath since yesterday, worse when I walk upstairs."
                   value={text}
                   maxLength={2000}
                   onChange={(e) => setText(e.target.value)}
                 />
+                <div className="tiny muted right">{text.length}/2000</div>
               </div>
-              <div
-                className="row"
-                style={{ gap: "0.6rem", alignItems: "flex-end" }}
-              >
-                <div className="field" style={{ maxWidth: 120 }}>
+              <div className="sym-foot">
+                <div className="field sym-age">
                   <label className="label" htmlFor="age">
                     Age
                   </label>
@@ -224,18 +215,16 @@ export default function SymptomChecker() {
                 {!confirming && (
                   <button
                     type="submit"
-                    className="btn btn-primary"
+                    className="btn btn-primary btn-lg sym-submit"
                     disabled={busy}
-                    style={{ flex: 1 }}
                   >
-                    {busy ? <Spinner /> : "Analyse my symptoms"}
+                    {busy ? <Spinner /> : "Analyse my symptoms →"}
                   </button>
                 )}
-                {confirming && <div style={{ flex: 1 }} />}
               </div>
             </form>
 
-            <div className="tiny muted">
+            <div className="tiny muted sym-note">
               ⚠️ This is decision support for a prototype, not a medical
               diagnosis. Seek emergency care for severe symptoms.
             </div>
@@ -244,32 +233,18 @@ export default function SymptomChecker() {
 
         {result && (
           <div className="stack">
-            <div
-              className={`alert alert-${urgencyTone === "brand" ? "info" : urgencyTone}`}
-            >
-              <span aria-hidden="true">
-                {urgencyTone === "danger"
-                  ? "🚨"
-                  : urgencyTone === "warning"
-                    ? "⚠️"
-                    : "ℹ️"}
-              </span>
-              <div>
-                <div
-                  className="row"
-                  style={{ gap: "0.5rem", marginBottom: "0.15rem" }}
-                >
-                  <strong style={{ textTransform: "capitalize" }}>
-                    {result.urgency} urgency
-                  </strong>
-                  {result.departments?.map((d) => (
-                    <span key={d} className="badge badge-brand">
-                      {d}
-                    </span>
-                  ))}
-                </div>
-                <div className="small">{result.summary}</div>
+            <div className={`sym-urgency sym-urgency-${urgencyTone}`}>
+              <div className="row" style={{ gap: "0.45rem", flexWrap: "wrap" }}>
+                <StatusBadge status={result.urgency}>
+                  {result.urgency} urgency
+                </StatusBadge>
+                {result.departments?.map((d) => (
+                  <span key={d} className="badge">
+                    {d}
+                  </span>
+                ))}
               </div>
+              <div className="small">{result.summary}</div>
             </div>
 
             {result.redFlags?.length > 0 && (
@@ -285,13 +260,8 @@ export default function SymptomChecker() {
             )}
 
             {result.advice && (
-              <div className="stack-sm">
-                <span
-                  className="tiny muted bold"
-                  style={{ textTransform: "uppercase" }}
-                >
-                  What to do
-                </span>
+              <div className="sym-block">
+                <span className="sym-block-title">What to do</span>
                 <p className="small" style={{ margin: 0 }}>
                   {result.advice}
                 </p>
@@ -299,14 +269,9 @@ export default function SymptomChecker() {
             )}
 
             {result.followUpQuestions?.length > 0 && (
-              <div className="stack-sm">
-                <span
-                  className="tiny muted bold"
-                  style={{ textTransform: "uppercase" }}
-                >
-                  The doctor may ask
-                </span>
-                <ul style={{ margin: 0, paddingLeft: "1.1rem" }}>
+              <div className="sym-block">
+                <span className="sym-block-title">The doctor may ask</span>
+                <ul className="sym-list">
                   {result.followUpQuestions.map((q, i) => (
                     <li key={i} className="small">
                       {q}
@@ -317,34 +282,27 @@ export default function SymptomChecker() {
             )}
 
             {doctors.length > 0 && (
-              <div className="stack-sm">
-                <span
-                  className="tiny muted bold"
-                  style={{ textTransform: "uppercase" }}
-                >
-                  Recommended doctors
-                </span>
-                {doctors.map((d) => (
-                  <div
-                    key={d.id}
-                    className="row card"
-                    style={{ padding: "0.7rem 0.85rem", boxShadow: "none" }}
-                  >
-                    <Avatar name={d.name} color={d.imageColor} size="sm" />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div className="small bold truncate">{d.name}</div>
-                      <div className="tiny muted truncate">
-                        {d.specialtyName} · {d.facilityName}
+              <div className="sym-block">
+                <span className="sym-block-title">Recommended doctors</span>
+                <div className="stack-sm">
+                  {doctors.map((d) => (
+                    <div key={d.id} className="sym-doctor">
+                      <Avatar name={d.name} color={d.imageColor} size="sm" />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div className="small bold truncate">{d.name}</div>
+                        <div className="tiny muted truncate">
+                          {d.specialtyName} · {d.facilityName}
+                        </div>
                       </div>
+                      <Link
+                        to={`/doctors/${encodeURIComponent(d.id)}`}
+                        className="btn btn-secondary btn-sm nowrap"
+                      >
+                        Book
+                      </Link>
                     </div>
-                    <Link
-                      to={`/doctors/${d.id}`}
-                      className="btn btn-secondary btn-sm nowrap"
-                    >
-                      Book
-                    </Link>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
             )}
 

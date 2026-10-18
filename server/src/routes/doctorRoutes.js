@@ -161,6 +161,34 @@ router.get(
 );
 
 /* --- provider slot management --- */
+
+/**
+ * Bulk remove published slots.
+ *
+ * `DELETE` with a body rather than one request per slot: a provider clearing
+ * twenty mistimed slots should not be twenty round trips, and the refusal for
+ * a booked slot has to be all-or-nothing — which only means anything if the
+ * whole set arrives together.
+ *
+ * Declared before the `PATCH /:id/slots/:slotId` sibling purely to keep the
+ * slot-management routes in one readable block; the paths and verbs differ, so
+ * neither can shadow the other.
+ */
+router.delete(
+  "/:id/slots",
+  requireRole("doctor", "admin"),
+  validate(
+    {
+      id: ID,
+      // The validator bounds an array but cannot describe its elements, so the
+      // id shape is checked in services/slotService.deleteSlots.
+      slotIds: { required: true, type: "array", minLength: 1, maxLength: 100 },
+    },
+    "body",
+  ),
+  ctrl.deleteSlots,
+);
+
 router.patch(
   "/:id/slots/:slotId",
   requireRole("doctor", "admin"),

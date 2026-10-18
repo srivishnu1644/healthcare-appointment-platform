@@ -169,14 +169,3 @@ export const requireAppointmentAccess =
       return next(err);
     }
   };
-
-/** Signed-in user, but admin/doctor are also allowed. */
-export const requireSelfOrAdmin = (req, res, next) => {
-  if (!req.user)
-    return next(new AppError("Authentication required", 401, "NO_TOKEN"));
-  const targetId = req.params.patientId || req.params.id;
-  if (req.user.role === "admin" || req.user.id === targetId) return next();
-  return next(
-    new AppError("You can only access your own records", 403, "FORBIDDEN"),
-  );
-};

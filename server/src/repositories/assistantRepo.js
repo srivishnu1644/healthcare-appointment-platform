@@ -22,7 +22,7 @@ import { query, rows } from "../config/database.js";
 export const recordTurn = async ({
   role = "patient",
   intent = null,
-  provider = "medicare-knowledge-base",
+  provider = "bookmydoc-knowledge-base",
   sourcedFrom = "knowledge-base",
   question,
   answer,

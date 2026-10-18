@@ -126,7 +126,7 @@ export const localTime = (instant = new Date()) => {
 export const todayLocal = () => localDate(new Date());
 
 /** Current UTC offset for the business zone, in minutes. */
-export const currentOffsetMinutes = (instant = new Date()) =>
+const currentOffsetMinutes = (instant = new Date()) =>
   Math.round(offsetMsAt(new Date(instant)) / 60000);
 
 /**
@@ -159,13 +159,6 @@ export const localToInstant = (date, time = "00:00") => {
   return instant;
 };
 
-/**
- * True when a wall-clock time occurs twice on a date (a daylight-saving
- * fall-back), meaning the mapping to an instant is not unique.
- *
- * @param {string} date  "YYYY-MM-DD"
- * @param {string} time  "HH:MM"
- */
 /**
  * Count how many distinct instants render back to a wall-clock time on a date.
  *
@@ -203,9 +196,6 @@ const candidateCount = (date, time) => {
   }
   return matches;
 };
-
-/** True when a wall-clock time occurs twice on a date. */
-export const ambiguousLocalTime = (date, time) => candidateCount(date, time) > 1;
 
 /** True when a wall-clock time does not exist on a date at all. */
 export const nonexistentLocalTime = (date, time) =>
@@ -270,12 +260,10 @@ export default {
   localTime,
   todayLocal,
   localToInstant,
-  currentOffsetMinutes,
   isValidDate,
   isValidTime,
   isBookableDate,
   durationMinutesBetween,
-  ambiguousLocalTime,
   nonexistentLocalTime,
   zoneLabel,
 };

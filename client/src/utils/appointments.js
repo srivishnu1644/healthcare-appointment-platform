@@ -98,50 +98,6 @@ export const byStartAscending = (a, b) => {
 };
 
 /**
- * Whole minutes since a queue entry joined, or null when it cannot be told.
- *
- * `joinedAt` is an absolute UTC instant, so this is a difference between two
- * instants and is therefore correct in every timezone. Rendering the instant
- * itself is NOT safe here: the browser has no idea what the clinic's timezone
- * is, so a formatted clock reading can be hours out. An elapsed count cannot be.
- *
- * The previous waiting-room preview printed `joinedAt.slice(11, 16)`, which is
- * the UTC time of day and was silently wrong for any clinic outside UTC.
- */
-export const minutesSinceJoin = (joinedAt, now = Date.now()) => {
-  if (!joinedAt) return null;
-  const at = new Date(joinedAt).getTime();
-  if (Number.isNaN(at)) return null;
-  return Math.max(0, Math.floor((now - at) / 60000));
-};
-
-/** "checked in 12 min ago" / "just now" / null when unknown. */
-export const joinedAgo = (joinedAt, now = Date.now()) => {
-  const mins = minutesSinceJoin(joinedAt, now);
-  if (mins === null) return null;
-  if (mins < 1) return "just now";
-  return `${mins} min ago`;
-};
-
-/**
- * Pair each queue entry with the appointment it belongs to.
- *
- * The queue payload carries no appointment time — `queueRepo.listForDoctor`
- * selects `start_time` but `toEntry` drops it — so the time, mode and status are
- * taken from the appointment record the dashboard already fetched. Nothing is
- * computed here: this only joins two server payloads on `appointmentId`.
- *
- * The server's own ordering is preserved exactly; entries are never re-sorted.
- */
-export const joinQueueWithAppointments = (entries = [], appointments = []) => {
-  const byId = new Map(appointments.map((a) => [a.id, a]));
-  return (Array.isArray(entries) ? entries : []).map((entry) => ({
-    ...entry,
-    appointment: byId.get(entry.appointmentId) ?? null,
-  }));
-};
-
-/**
  * Is this slot one the patient is allowed to pick right now?
  *
  * Strict on purpose. `status === "available"` alone is not enough — the booking

@@ -7,7 +7,6 @@ import {
   Avatar,
   EmptyState,
   Loading,
-  Modal,
   Stat,
   StatusBadge,
   Tabs,
@@ -15,6 +14,7 @@ import {
 import {
   colorFrom,
   currency,
+  cx,
   formatDay,
   formatTime,
   label,
@@ -25,29 +25,20 @@ import {
 import {
   LIVE_STATUSES,
   byStartAscending,
-  joinedAgo,
-  joinQueueWithAppointments,
   startInstant,
   summariseDay,
 } from "../utils/appointments";
-import { useQueue, waitingPatients } from "../context/QueueContext.jsx";
 
 /**
- * Clock time of an absolute instant, for "called at 2:05 PM".
- *
- * `new Date(instant)` plus the browser's own clock, so it is correct in whatever
- * zone the browser is in. The preview this replaced sliced the ISO string
- * (`joinedAt.slice(11, 16)`), which is the UTC time of day and was silently
- * wrong for any clinic outside UTC.
+ * A stable stand-in for "no slots", so the memos below have something to
+ * compare against before the schedule has loaded. A fresh `[]` written inline
+ * would be a new array on every render, which is the exact thing those memos
+ * exist to stop.
  */
-const formatClock = (instant) => {
-  if (!instant) return "";
-  const d = new Date(instant);
-  if (Number.isNaN(d.getTime())) return "";
-  return formatTime(
-    `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`,
-  );
-};
+const EMPTY_SLOTS = [];
+import AdvancingCard from "../features/appointments/AdvancingCard.jsx";
+import useOutwardWipe from "../features/appointments/useOutwardWipe.js";
+import GenerateSlotsModal from "../features/schedule/GenerateSlotsModal.jsx";
 
 /**
  * Mirrors `ALLOWED_TRANSITIONS` in server/src/services/bookingService.js, which
@@ -70,30 +61,31 @@ const STATUS_ACTIONS = {
 /**
  * The status buttons for one appointment.
  *
- * Shared by the appointment list and the queue so both offer exactly what
- * `STATUS_ACTIONS` allows, with one disabled rule and one submit path.
+ * One place to decide what is OFFERED and how it is submitted, so every row of
+ * the appointment list behaves the same way. `className` tags the bar for the
+ * stage-advance stagger and `onClickCapture` carries the outward wipe — which is
+ * why the effect is delegated from here instead of being folded into the
+ * per-status `onChange`, whose job is the request, not the feedback.
+ *
+ * Every transition wears the same `appt-btn` fill. The old green / glassy /
+ * red split is gone: it read as three competing materials, and the destructive
+ * ones are still the ones a provider reaches for deliberately, on a row that is
+ * already unambiguous about what clicking will do.
  */
-function StatusActions({ appointment, onChange, busy, disabled }) {
+function StatusActions({ appointment, onChange, busy, disabled, className, onClickCapture }) {
   const actions = STATUS_ACTIONS[appointment.status] || [];
   if (actions.length === 0) return null;
   return (
-    <div className="row row-wrap" style={{ gap: "0.35rem" }}>
+    <div
+      className={cx("row row-wrap", className)}
+      style={{ gap: "0.35rem" }}
+      onClickCapture={onClickCapture}
+    >
       {actions.map((s) => (
         <button
           key={s}
           type="button"
-          className={`btn btn-sm ${
-            s === "completed"
-              ? "btn-success"
-              : s === "cancelled" || s === "no-show"
-                ? "btn-ghost"
-                : "btn-secondary"
-          }`}
-          style={
-            s === "cancelled" || s === "no-show"
-              ? { color: "var(--danger)" }
-              : undefined
-          }
+          className="btn appt-btn btn-sm"
           onClick={() => onChange(appointment, s)}
           disabled={disabled || busy}
         >
@@ -117,6 +109,9 @@ export default function ProviderDashboard() {
   // while the rest of the list stays usable.
   const [busyAppt, setBusyAppt] = useState(null);
 
+  // Replays the outward wipe on whichever transition was clicked.
+  const onWipe = useOutwardWipe();
+
   // The date whose slots the schedule card is showing. It follows today until
   // the provider picks another, so the initial paint costs no extra request.
   const [dayDate, setDayDate] = useState(todayISO());
@@ -126,57 +121,17 @@ export default function ProviderDashboard() {
   const [dayRetry, setDayRetry] = useState(0);
 
 
+  // The slot dialog owns its own form state (date, times, length, mode), so
+  // all this page keeps is whether it is open.
   const [genOpen, setGenOpen] = useState(false);
-  const [genDate, setGenDate] = useState(todayISO());
-  const [genTimes, setGenTimes] = useState("09:00\n09:30\n10:00\n10:30");
-  const [genMode, setGenMode] = useState("in-person");
 
-  // The session already carries the provider record, so the schedule and the
-  // queue are fetched together rather than one after the other.
+  // The session already carries the provider record, so the schedule needs no
+  // second request to resolve it.
   const doctorId = user?.doctor?.id ?? null;
-
-  // One waiting room for the whole app: a single poller, a single copy of the
-  // state, one error to retry. See QueueContext for why it is a provider rather
-  // than a hook.
-  const {
-    room,
-    loading: queueLoading,
-    error: queueError,
-    refreshing: queueRefreshing,
-    refresh: queueRefresh,
-    reload: queueReload,
-  } = useQueue();
-  const [calling, setCalling] = useState(false);
-
-  // Queue entries carry no appointment time or status - the payload drops the
-  // slot start it selects - so each is paired with the appointment this page
-  // already fetched. Nothing is computed here; this only joins two payloads, and
-  // `joinQueueWithAppointments` preserves the server's own order.
-  const queueWaiting = useMemo(
-    () =>
-      joinQueueWithAppointments(waitingPatients(room), data?.appointments ?? []).map((entry) => ({
-        ...entry,
-        waited: joinedAgo(entry.joinedAt),
-      })),
-    [room, data],
-  );
-
-  // Whoever is in consultation, so the active card offers the same status
-  // actions as every other row.
-  const activeAppointment = useMemo(
-    () =>
-      (data?.appointments ?? []).find(
-        (a) => a.id === room?.activeConsultation?.appointmentId,
-      ) ?? null,
-    [data, room],
-  );
 
   const load = useCallback(async () => {
     const day = todayISO();
     try {
-      // Only the schedule is fetched here. The waiting room belongs to
-      // QueueContext, which already has a poller and its own error state;
-      // fetching it again here would be a second copy of the same data.
       setData(await api.mySchedule({ date: day }));
       setError(null);
     } catch (err) {
@@ -242,26 +197,46 @@ export default function ProviderDashboard() {
    * Everything the overview needs for the current clinic day.
    *
    * The day classification itself lives in `summariseDay`, shared with the
-   * harness so it can be exercised against controlled data. The waiting list is
-   * rendered in the order the server returned it rather than re-sorted here.
+   * harness so it can be exercised against controlled data. No `checkedInIds`
+   * is passed: check-in lives in the waiting room, which this page no longer
+   * renders, so `checkedIn` is not read here.
    */
-  const overview = useMemo(() => {
-    // A queue entry is the authoritative record of a check-in. The appointment
-    // status is not: a provider may set in-progress directly, which would count
-    // a patient who never arrived.
-    const checkedInIds = new Set(
-      (room?.entries ?? [])
-        .filter((e) => e.state === "waiting" || e.state === "in-consultation")
-        .map((e) => e.appointmentId),
-    );
-    return summariseDay(data?.appointments || [], { today, checkedInIds });
-  }, [data, room, today]);
+  const overview = useMemo(
+    () => summariseDay(data?.appointments || [], { today }),
+    [data, today],
+  );
+
+  /**
+   * Memoised because this array is handed to the slot dialog as
+   * `existingSlots`, and an inline `.filter()` gave it a new identity on every
+   * render. The dialog keys its open/close reset on that prop, and that reset
+   * clears `deleting` — so a plain re-render was enough to bounce the provider
+   * out of delete mode and back into the add form. It also re-rendered every
+   * row of the schedule card below for nothing.
+   *
+   * Above the early returns, because they are hooks and the two returns below
+   * are conditional: a hook called after them would be skipped whenever the
+   * page took the loading or error branch, and React would throw on the change
+   * in hook count. `EMPTY_SLOTS` rather than `?? []` so the no-data render
+   * still hands the memo a stable array to compare against.
+   */
+  const scheduleSlots = data?.slots ?? EMPTY_SLOTS;
+  const todaysSlots = useMemo(
+    () => scheduleSlots.filter((s) => s.date === today),
+    [scheduleSlots, today],
+  );
+  // Today's slots arrive with the schedule call; any other date is fetched
+  // separately, so no request is made until the provider picks a day.
+  const shownSlots = useMemo(
+    () => (dayDate === today ? todaysSlots : (daySlots ?? EMPTY_SLOTS)),
+    [dayDate, today, todaysSlots, daySlots],
+  );
 
   if (loading) return <Loading label="Loading your schedule…" />;
 
   if (error || !data?.doctor) {
     return (
-      <div className="page">
+      <div className="page page-glass-bg">
         <div className="container stack">
           <Alert tone="danger">
             {error || "No provider profile linked to this account"}
@@ -285,64 +260,49 @@ export default function ProviderDashboard() {
     );
   }
 
-  const { doctor, slots } = data;
-  const todaysSlots = slots.filter((s) => s.date === today);
-  // Today's slots arrive with the schedule call; any other date is fetched
-  // separately, so no request is made until the provider picks a day.
-  const shownSlots = dayDate === today ? todaysSlots : (daySlots ?? []);
+  const { doctor } = data;
   const shownDate = dayDate;
   const isToday = dayDate === today;
+
+  /**
+   * Re-read everything after slots changed, optionally landing the strip on a
+   * particular day first.
+   *
+   * One rule, because there were two copies of it and they had already drifted:
+   * today's slots arrive with the schedule call, so any other day is a separate
+   * request and has to be asked for again or the strip keeps showing the state
+   * from before the change. Every mutation that can alter a slot's existence or
+   * status routes through here.
+   *
+   * `focusDate` is passed rather than read, because a caller that has just
+   * called `setDayDate` still sees the old value in this closure. When it
+   * matches the day already showing, the retry counter is bumped instead: the
+   * fetch effect keys off `dayDate`, so an unchanged date would never refetch.
+   */
+  const afterSlotsChanged = async (focusDate) => {
+    const target = focusDate ?? dayDate;
+    if (focusDate && focusDate !== dayDate) setDayDate(focusDate);
+    else if (focusDate) setDayRetry((n) => n + 1);
+
+    await load();
+
+    const shown = focusDate ?? dayDate;
+    if (shown !== todayISO() && doctorId) {
+      const fresh = await api.doctorSlots(doctorId, { date: shown });
+      setDaySlots(fresh.slots ?? []);
+    }
+  };
 
   const setSlotStatus = async (slot, status) => {
     setBusy(true);
     try {
       await api.updateSlot(doctor.id, slot.id, { status });
       toast.success(`Slot ${status}`);
-      await load();
-      // A date other than today's is served by a separate call, so refresh it
-      // too, or the card would keep showing the state from before the change.
-      if (dayDate !== todayISO() && doctorId) {
-        const fresh = await api.doctorSlots(doctorId, { date: dayDate });
-        setDaySlots(fresh.slots ?? []);
-      }
+      await afterSlotsChanged();
     } catch (err) {
       toast.error(err.message);
     } finally {
       setBusy(false);
-    }
-  };
-
-  /**
-   * Call the next waiting patient.
-   *
-   * Guarded in two places: `calling` disables the button, and the early return
-   * covers a click that lands between the click and the re-render. The server is
-   * idempotent too, so even a retry that got through returns the same patient
-   * rather than skipping one.
-   */
-  const callNext = async () => {
-    if (calling || !doctorId) return;
-    setCalling(true);
-    try {
-      const res = await api.callNext({ doctorId, date: todayISO() });
-      const name = res?.entry?.patientName ?? "the next patient";
-      toast.success(
-        res?.promoted ? `Called ${name}` : `${name} is already in consultation`,
-      );
-      // The mutation changed the room, so read it now rather than waiting for
-      // the poller. The schedule is re-read too: a completed visit frees a slot.
-      await Promise.all([load(), queueRefresh()]);
-    } catch (err) {
-      // A room that emptied between the poll and the click is a normal outcome,
-      // not a failure worth alarming the provider about.
-      if (err?.code === "NO_WAITING_PATIENT" || err?.status === 404) {
-        toast.warning("Nobody is waiting");
-        await queueRefresh();
-      } else {
-        toast.error(err?.message || "Could not call the next patient");
-      }
-    } finally {
-      setCalling(false);
     }
   };
 
@@ -354,9 +314,7 @@ export default function ProviderDashboard() {
     try {
       await api.changeStatus(appt.id, status, `Marked ${status} by doctor`);
       toast.success(`Appointment ${status}`);
-      // A completed or cancelled visit changes the waiting room too, so both
-      // are re-read rather than waiting for the poller.
-      await Promise.all([load(), queueRefresh()]);
+      await load();
     } catch (err) {
       toast.error(err.message);
     } finally {
@@ -366,24 +324,15 @@ export default function ProviderDashboard() {
 
 
 
-  const generateSlots = async () => {
-    const times = [
-      ...new Set(
-        genTimes
-          .split(/[\n,]/)
-          .map((t) => t.trim())
-          .filter(Boolean),
-      ),
-    ].sort();
-
-    if (!times.length) {
-      toast.warning("Add at least one time");
-      return;
-    }
-
-    // Checked here as well as on the server so a typo is caught before the
-    // round trip. The server is still the authority: this only saves a request
-    // and gives a message next to the field the provider is looking at.
+  /**
+   * Publish availability.
+   *
+   * The payload comes straight from the dialog, which can only produce times
+   * the API accepts. The re-check below is kept anyway: the server is the
+   * authority, and this handler is the one place the payload is shaped for the
+   * wire, so it is the right place for the guard.
+   */
+  const generateSlots = async ({ date, times, duration, mode }) => {
     const malformed = times.filter((t) => !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(t));
     if (malformed.length) {
       toast.warning(
@@ -395,10 +344,10 @@ export default function ProviderDashboard() {
     setBusy(true);
     try {
       const res = await api.generateSlots(doctor.id, {
-        date: genDate,
+        date,
         times,
-        duration: 30,
-        mode: genMode,
+        duration,
+        mode,
       });
 
       // `skipped` is a list of objects, each with the time and why it was
@@ -423,7 +372,9 @@ export default function ProviderDashboard() {
       toast.success(message);
 
       setGenOpen(false);
-      await load();
+      // Land on the day that was just filled, so the provider can see the
+      // result rather than an unchanged strip.
+      await afterSlotsChanged(date);
     } catch (err) {
       toast.error(err.message);
     } finally {
@@ -433,7 +384,7 @@ export default function ProviderDashboard() {
 
   const renderAppt = (a) => {
     return (
-      <div key={a.id} className="card card-pad">
+      <AdvancingCard key={a.id} stage={a.status} className="card card-pad">
         <div className="row-between" style={{ alignItems: "flex-start" }}>
           <div className="row" style={{ alignItems: "flex-start" }}>
             <Avatar
@@ -462,14 +413,16 @@ export default function ProviderDashboard() {
             onChange={changeStatus}
             busy={busy}
             disabled={busyAppt === a.id}
+            className="appt-btn-group appt-actions-inline"
+            onClickCapture={onWipe}
           />
         </div>
-      </div>
+      </AdvancingCard>
     );
   };
 
   return (
-    <div className="page">
+    <div className="page page-glass-bg">
       <div className="container stack">
         <div className="row-between">
           <div className="row">
@@ -498,16 +451,11 @@ export default function ProviderDashboard() {
             </h2>
             <span className="small muted">{formatDay(today)}</span>
           </div>
-          <div className="grid grid-4">
+          <div className="grid grid-3">
             <Stat
               label="Appointments"
               value={overview.todayCount}
               sub={`${overview.liveCount} still live`}
-            />
-            <Stat
-              label="Checked in"
-              value={overview.checkedIn.length}
-              sub="waiting or in the room"
             />
             <Stat
               label="Completed"
@@ -530,12 +478,20 @@ export default function ProviderDashboard() {
           </div>
         </section>
 
-        {/* today's slot strip */}
+        {/* One clinic day at a time; `dayDate` picks which. */}
         <div className="card">
           <div className="card-head">
             <h3>Schedule</h3>
             <div className="row row-wrap" style={{ gap: "0.75rem" }}>
-              <label className="small muted nowrap" htmlFor="schedule-date">
+              {/* Two things keep the date control inside its own box.
+                  `nowrap` is deliberately absent: this line is the widest thing
+                  in the header, and pinning it to one row pushed the card past
+                  a phone's viewport. And the input opts out of `.input`'s
+                  `width: 100%` - that percentage resolves against the label's
+                  content box, so the field came out as wide as the label while
+                  still starting after the "Date " text, spilling out both sides
+                  and painting over the counts beside it. */}
+              <label className="small muted" htmlFor="schedule-date">
                 Date{" "}
                 <input
                   id="schedule-date"
@@ -543,12 +499,10 @@ export default function ProviderDashboard() {
                   className="input"
                   value={dayDate}
                   onChange={(e) => setDayDate(e.target.value || todayISO())}
-                  style={{ marginLeft: "0.35rem" }}
+                  style={{ width: "auto", marginLeft: "0.35rem" }}
                 />
               </label>
-              {/* No `nowrap`: this line is the widest thing in the header and
-                  forcing it onto one row pushed the card past a phone's
-                  viewport. */}
+              {/* No `nowrap` here either: the same width argument applies. */}
               <span className="small muted">
                 {isToday ? "Today" : formatDay(shownDate)}:{" "}
                 {shownSlots.filter((s) => s.status === "available").length} open ·{" "}
@@ -694,177 +648,6 @@ export default function ProviderDashboard() {
           </div>
         </section>
 
-        {/*
-          The waiting room, in the order the server returned it.
-
-          The room is (doctor_id, clinic_date): patients hold separate
-          appointment slots but wait for the same person, so their order comes
-          from when they ARRIVED. `roomPosition` is computed by the server and
-          renumbers itself when somebody leaves; it is never calculated here,
-          and the legacy per-slot `position` is not used at all.
-
-          The patient in consultation is reported separately rather than ranked,
-          so "you are 2nd" never silently changes meaning when the doctor moves on.
-        */}
-        <section className="card" aria-labelledby="queue-panel">
-          <div className="card-head">
-            <h3 id="queue-panel">Queue</h3>
-            <div className="row row-wrap" style={{ gap: "0.75rem" }}>
-              <span className="small muted nowrap">
-                {room.waitingCount} waiting
-                {/* This is an ASSUMPTION, not a measurement: the API multiplies
-                    the head count by a flat 15 minutes per patient. Labelled as
-                    the assumption it is, so nobody reads it as how long the wait
-                    actually is. A real estimate would need per-visit durations. */}
-                {room.averageWaitMinutes
-                  ? ` · ~${room.averageWaitMinutes} min if each visit is 15 min`
-                  : ""}
-              </span>
-              <button
-                type="button"
-                className="btn btn-primary btn-sm"
-                onClick={callNext}
-                disabled={calling || queueLoading || queueError !== null}
-                title={
-                  queueError
-                    ? "The waiting room could not be loaded"
-                    : room.activeConsultation
-                      ? "The current patient is still in consultation"
-                      : "Call the next waiting patient"
-                }
-              >
-                {calling ? "Calling…" : "Call next patient"}
-              </button>
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={queueRefresh}
-                disabled={queueRefreshing || calling}
-              >
-                {queueRefreshing ? "Refreshing…" : "Refresh"}
-              </button>
-            </div>
-          </div>
-          <div className="card-body stack-sm">
-            {queueError ? (
-              <Alert tone="danger">
-                {queueError}{" "}
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-sm"
-                  onClick={queueReload}
-                  disabled={queueRefreshing}
-                >
-                  Retry
-                </button>
-              </Alert>
-            ) : queueLoading && !room.clinicDate ? (
-              <Loading label="Loading the waiting room…" />
-            ) : (
-              <>
-                {room.activeConsultation && (
-                  <div
-                    className="card card-pad"
-                    style={{ borderLeft: "3px solid var(--brand-500)" }}
-                  >
-                    <div className="row-between row-wrap" style={{ gap: "0.5rem" }}>
-                      <div className="row row-wrap" style={{ gap: "0.6rem", minWidth: 0 }}>
-                        <Avatar
-                          name={room.activeConsultation.patientName}
-                          color={colorFrom(room.activeConsultation.patientName)}
-                          size="sm"
-                        />
-                        <div style={{ minWidth: 0 }}>
-                          <div className="row row-wrap" style={{ gap: "0.4rem" }}>
-                            <span className="tiny muted">In consultation</span>
-                            <StatusBadge status="in-consultation" />
-                          </div>
-                          <strong className="small">
-                            {room.activeConsultation.patientName ?? "Patient"}
-                          </strong>
-                          {room.activeConsultation.calledAt && (
-                            <div className="tiny muted">
-                              Called {formatClock(room.activeConsultation.calledAt)}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                      {activeAppointment && (
-                        <StatusActions
-                          appointment={activeAppointment}
-                          onChange={changeStatus}
-                          busy={busy}
-                          disabled={busyAppt === activeAppointment.id || calling}
-                        />
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {queueWaiting.length === 0 && !room.activeConsultation ? (
-                  <EmptyState
-                    icon="🕒"
-                    title="Nobody is waiting"
-                    message="Patients appear here once they check in."
-                  />
-                ) : queueWaiting.length === 0 ? (
-                  <p className="tiny muted" style={{ margin: 0 }}>
-                    Nobody else is waiting.
-                  </p>
-                ) : (
-                  <ul
-                    className="stack-sm"
-                    style={{ listStyle: "none", margin: 0, padding: 0 }}
-                  >
-                    {queueWaiting.map((row) => (
-                      <li
-                        key={row.id}
-                        className="row-between row-wrap"
-                        style={{ gap: "0.5rem" }}
-                      >
-                        <div className="row row-wrap" style={{ gap: "0.6rem", minWidth: 0 }}>
-                          <span className="small bold nowrap" title="Place in the line">
-                            #{row.roomPosition}
-                          </span>
-                          <Avatar
-                            name={row.patientName}
-                            color={colorFrom(row.patientName)}
-                            size="sm"
-                          />
-                          <div style={{ minWidth: 0 }}>
-                            <div className="row row-wrap" style={{ gap: "0.4rem" }}>
-                              <strong className="small">
-                                {row.patientName ?? "Patient"}
-                              </strong>
-                              <StatusBadge status={row.state} />
-                            </div>
-                            <div className="tiny muted">
-                              {row.appointment
-                                ? `${formatTime(row.appointment.startTime)} · ${
-                                    row.appointment.mode === "video" ? "Video" : "In person"
-                                  }`
-                                : "Appointment not in this schedule"}
-                              {row.waited ? ` · waiting ${row.waited}` : ""}
-                            </div>
-                          </div>
-                        </div>
-                        {row.appointment && (
-                          <StatusActions
-                            appointment={row.appointment}
-                            onChange={changeStatus}
-                            busy={busy}
-                            disabled={busyAppt === row.appointment.id || calling}
-                          />
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </>
-            )}
-          </div>
-        </section>
-
         <div id="appointment-management">
         <Tabs
           tabs={[
@@ -896,77 +679,22 @@ export default function ProviderDashboard() {
       </div>
         </div>
 
-      {/* generate slots modal */}
-      <Modal
+      {/* Generate slots.
+
+          `shownSlots` is handed over so the dialog can strike through times
+          this doctor has already published. It is only the day the schedule
+          card happens to be showing, which is why the server's skip report
+          still matters. */}
+      <GenerateSlotsModal
         open={genOpen}
         onClose={() => setGenOpen(false)}
-        title="Add appointment slots"
-        footer={
-          <>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => setGenOpen(false)}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={generateSlots}
-              disabled={busy}
-            >
-              {busy ? "Creating…" : "Create slots"}
-            </button>
-          </>
-        }
-      >
-        <div className="stack">
-          <div className="field">
-            <label className="label" htmlFor="g-date">
-              Date
-            </label>
-            <input
-              id="g-date"
-              type="date"
-              className="input"
-              value={genDate}
-              min={todayISO()}
-              onChange={(e) => setGenDate(e.target.value)}
-            />
-          </div>
-          <div className="field">
-            <label className="label" htmlFor="g-times">
-              Times (one per line, 24h format)
-            </label>
-            <textarea
-              id="g-times"
-              className="textarea"
-              rows={5}
-              value={genTimes}
-              onChange={(e) => setGenTimes(e.target.value)}
-            />
-          </div>
-          <div className="field">
-            <label className="label" htmlFor="g-mode">
-              Mode
-            </label>
-            <select
-              id="g-mode"
-              className="select"
-              value={genMode}
-              onChange={(e) => setGenMode(e.target.value)}
-            >
-              <option value="in-person">In person</option>
-              <option value="video">Video</option>
-            </select>
-          </div>
-          <Alert tone="info">
-            Duplicates are skipped automatically — existing times stay
-            untouched.
-          </Alert>
-        </div>
-      </Modal>
+        onSubmit={generateSlots}
+        busy={busy}
+        initialDate={dayDate}
+        existingSlots={shownSlots}
+        doctorId={doctorId}
+        onDeleted={afterSlotsChanged}
+      />
     </div>
   );
 }

@@ -55,9 +55,6 @@ import logger from "../utils/logger.js";
 
 const log = logger.tag("booking");
 
-/** Statuses that still occupy their slot. */
-const ACTIVE_STATUSES = ["scheduled", "confirmed", "in-progress"];
-
 /** Statuses that can no longer change. */
 const CLOSED_STATUSES = ["completed", "cancelled", "no-show"];
 
@@ -668,7 +665,7 @@ export const changeStatus = async ({
   return updated;
 };
 
-export { ACTIVE_STATUSES, CLOSED_STATUSES };
+export { CLOSED_STATUSES };
 export default {
   book,
   reschedule,

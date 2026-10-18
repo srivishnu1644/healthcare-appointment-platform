@@ -3,9 +3,14 @@
  *
  * The only supported storage format is a bcrypt hash. The prototype's previous
  * scheme — storing the literal string `hashed:${plaintext}` — was reversible and
- * is removed. Legacy values are still *readable* through `verifyPassword` so that
- * an existing `db.json` can be migrated transparently on first successful login,
- * but they are never written back.
+ * is removed. Legacy values are still *readable* through `verifyPassword`, so any
+ * row written before the bcrypt migration can be upgraded in place on its next
+ * successful login. They are never written back.
+ *
+ * The JSON datastore those legacy rows lived in (`server/.data/db.json`) has been
+ * deleted, but the read path stays: the same upgrade-on-login behaviour still
+ * applies to any pre-migration row that reached the database by another route,
+ * such as an import.
  */
 import bcrypt from "bcryptjs";
 import { timingSafeEqual } from "node:crypto";
@@ -20,11 +25,11 @@ const ROUNDS = (() => {
 })();
 
 /** True when `stored` is a real bcrypt hash rather than a legacy value. */
-export const isBcryptHash = (stored) =>
+const isBcryptHash = (stored) =>
   typeof stored === "string" && /^\$2[aby]\$\d{2}\$/.test(stored);
 
 /** True when `stored` is a legacy `hashed:` value from the prototype. */
-export const isLegacyHash = (stored) =>
+const isLegacyHash = (stored) =>
   typeof stored === "string" && stored.startsWith("hashed:");
 
 /**
@@ -79,7 +84,5 @@ export const needsRehash = (stored) => {
 export default {
   hashPassword,
   verifyPassword,
-  isBcryptHash,
-  isLegacyHash,
   needsRehash,
 };

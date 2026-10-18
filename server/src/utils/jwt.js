@@ -32,7 +32,7 @@ import jwt from "jsonwebtoken";
 // Resolved in config/env.js, which app.js imports first. Outside `test` a
 // missing JWT_SECRET is fatal there, so this cannot silently be undefined.
 const SECRET = process.env.JWT_SECRET;
-const ISSUER = process.env.JWT_ISSUER || "medicare-api";
+const ISSUER = process.env.JWT_ISSUER || "bookmydoc-api";
 
 if (!SECRET) {
   throw new Error(
@@ -45,7 +45,7 @@ if (!SECRET) {
  * stolen token is worth and the more often the client must refresh.
  * Set via JWT_EXPIRES_IN (e.g. "15m", "900s", "1h").
  */
-export const ACCESS_TTL = process.env.JWT_EXPIRES_IN || "15m";
+const ACCESS_TTL = process.env.JWT_EXPIRES_IN || "15m";
 
 /** Access-token lifetime in seconds, for the client to schedule a refresh. */
 export const accessTtlSeconds = () => {
@@ -92,4 +92,4 @@ export const verifyToken = (token) => {
   }
 };
 
-export default { signToken, verifyToken, ACCESS_TTL, accessTtlSeconds };
+export default { signToken, verifyToken, accessTtlSeconds };

@@ -110,7 +110,7 @@ const utcMidnight = (iso) => {
 };
 
 /** Whole days from `fromISO` to `toISO`; negative when `toISO` is earlier. */
-export const calendarDaysBetween = (fromISO, toISO) =>
+const calendarDaysBetween = (fromISO, toISO) =>
   Math.round((utcMidnight(toISO) - utcMidnight(fromISO)) / 86400000);
 
 /** "in 3 days" / "2 days ago" / "today" */
@@ -159,7 +159,7 @@ export const initials = (name = "") => {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 };
 
-export const titleCase = (s = "") =>
+const titleCase = (s = "") =>
   String(s)
     .replace(/[-_]/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
@@ -185,20 +185,6 @@ export const colorFrom = (seed = "") => {
   ];
   return palette[Math.abs(hash) % palette.length];
 };
-
-/**
- * Whether a wall-clock time on a given calendar date has passed.
- *
- * NOT for appointment timing. It compares two strings the clinic and the browser
- * each rendered in their own timezone, which is the class of bug that made
- * `todayISO` return yesterday during the first hours of an IST user's day.
- * Whether an appointment has started is `hasStarted()` in utils/appointments.js,
- * which compares absolute instants via the server's `startsAt`.
- *
- * Kept for genuinely textual cases (a clinic opening time, say).
- */
-export const isPast = (iso, time = "23:59") =>
-  new Date(`${iso}T${time}`) < new Date();
 
 /** Merge conditional class names. */
 export const cx = (...parts) => parts.filter(Boolean).join(" ").trim();

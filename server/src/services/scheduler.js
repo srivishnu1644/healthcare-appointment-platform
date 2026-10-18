@@ -54,7 +54,7 @@ let lastStartedAt = null;
  * outbox, and draining immediately afterwards delivers it in the same pass. The
  * reverse order would leave it queued until the next tick.
  */
-export const runOnce = async ({ hours = 24 } = {}) => {
+const runOnce = async ({ hours = 24 } = {}) => {
   if (running) {
     // Re-entry guard. Without it, a pass that takes longer than the interval
     // starts a second concurrent pass, and the two fight over the same rows.
@@ -130,4 +130,4 @@ export const schedulerState = async () => {
   };
 };
 
-export default { runOnce, startScheduler, stopScheduler, schedulerState };
+export default { startScheduler, stopScheduler, schedulerState };

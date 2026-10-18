@@ -81,7 +81,7 @@ export default function AdminQueue() {
   const deliveries = scheduler?.notifications?.deliveries ?? {};
 
   return (
-    <div className="page">
+    <div className="page page-glass-bg">
       <div className="container stack">
         <div className="page-head row-between row-wrap">
           <div>

@@ -38,27 +38,13 @@ import {
 
 const MODE_LABEL = { video: "Video", "in-person": "In person" };
 
-/** Calendar chip. `full` adds the month, which the appointments page shows. */
+/** Calendar tile. `full` adds the month, which the appointments page shows. */
 function DateChip({ iso, full }) {
   return (
-    <div
-      className="center"
-      style={{
-        width: full ? 60 : 46,
-        flexShrink: 0,
-        padding: full ? "0.45rem 0" : "0.3rem 0",
-        background: "var(--brand-50)",
-        borderRadius: 10,
-      }}
-    >
-      <div className="tiny muted bold">{weekdayShort(iso)}</div>
-      <div
-        className="bold"
-        style={{ lineHeight: full ? 1.1 : 1.05, fontSize: full ? "1.15rem" : "1rem" }}
-      >
-        {dayNum(iso)}
-      </div>
-      {full && <div className="tiny muted">{monthShort(iso)}</div>}
+    <div className="appt-date" aria-hidden="true">
+      <div className="appt-date-dow">{weekdayShort(iso)}</div>
+      <div className="appt-date-day">{dayNum(iso)}</div>
+      {full && <div className="appt-date-mon">{monthShort(iso)}</div>}
     </div>
   );
 }
@@ -70,7 +56,7 @@ function DateChip({ iso, full }) {
  *              relative day, reason and cancellation reason.
  *   `compact`— the dashboard's recent list: time and specialty, with the
  *              date usually supplied through `trailing`.
- * @param {React.ReactNode} [actions]   right-hand action column, supplied by
+ * @param {React.ReactNode} [actions]   action bar, supplied by
  *   the caller. Renders nothing when omitted, so a read-only list needs no
  *   special-casing.
  * @param {React.ReactNode} [trailing]  right-hand meta shown on the last line.
@@ -92,68 +78,71 @@ export function AppointmentCard({
   const a = appointment;
 
   return (
-    <div className="row row-wrap" style={{ alignItems: "flex-start" }}>
-      <DateChip iso={a.date} full={full} />
+    <div className="appt">
+      <div className="appt-top">
+        <DateChip iso={a.date} full={full} />
 
-      <div style={{ flex: 1, minWidth: full ? 220 : 160 }}>
-        <div className="row row-wrap" style={{ gap: "0.45rem" }}>
-          {to ? (
-            <Link to={to} className="bold truncate" style={{ color: "inherit" }}>
-              {a.doctorName}
-            </Link>
+        <div className="appt-main">
+          <div className="row row-wrap" style={{ gap: "0.45rem" }}>
+            {to ? (
+              <Link to={to} className="bold truncate appt-doctor" style={{ color: "inherit" }}>
+                {a.doctorName}
+              </Link>
+            ) : (
+              <strong className="truncate appt-doctor">{a.doctorName}</strong>
+            )}
+            <StatusBadge status={a.status} />
+            {a.mode === "video" && <span className="badge badge-violet">Video</span>}
+            {/* Where this patient is in the waiting room, and nothing about
+                anyone else. `queuePosition` is the place in the LINE, so a patient
+                already with the doctor has none and shows a state instead. */}
+            {a.queuePosition ? (
+              <span className="badge badge-info">Queue #{a.queuePosition}</span>
+            ) : a.queueState === "in-consultation" ? (
+              <span className="badge badge-info">In consultation</span>
+            ) : null}
+          </div>
+
+          {full ? (
+            <div className="appt-meta">
+              <span>
+                <span aria-hidden="true">🕐</span> {formatTime(a.startTime)}
+                <span className="muted">· {relativeDay(a.date)}</span>
+              </span>
+              <span>
+                <span aria-hidden="true">💰</span> {currency(a.fee)}
+              </span>
+              {a.specialtyName && (
+                <span>
+                  <span aria-hidden="true">🩺</span> {a.specialtyName}
+                  {a.facilityName ? ` · ${a.facilityName}` : ""}
+                </span>
+              )}
+            </div>
           ) : (
-            <strong className="truncate">{a.doctorName}</strong>
+            <div className="small muted truncate">
+              {formatTime(a.startTime)} · {a.specialtyName}
+            </div>
           )}
-          <StatusBadge status={a.status} />
-          {a.mode === "video" && <span className="badge badge-violet">Video</span>}
-          {/* Where this patient is in the waiting room, and nothing about
-              anyone else. `queuePosition` is the place in the LINE, so a patient
-              already with the doctor has none and shows a state instead. */}
-          {a.queuePosition ? (
-            <span className="badge badge-info">Queue #{a.queuePosition}</span>
-          ) : a.queueState === "in-consultation" ? (
-            <span className="badge badge-info">In consultation</span>
-          ) : null}
+
+          {full && a.reason && (
+            <div className="appt-reason">“{a.reason}”</div>
+          )}
+          {full && a.status === "cancelled" && a.cancelReason && (
+            <div className="appt-cancelled">
+              Cancelled: {a.cancelReason}
+            </div>
+          )}
         </div>
 
-        {full ? (
-          <>
-            <div className="small muted">
-              {a.specialtyName}
-              {a.facilityName ? ` · ${a.facilityName}` : ""}
-            </div>
-            <div className="small">
-              {formatTime(a.startTime)} · {currency(a.fee)} ·{" "}
-              <span className="muted">{relativeDay(a.date)}</span>
-            </div>
-            {a.reason && (
-              <div className="tiny muted" style={{ marginTop: 4 }}>
-                Reason: {a.reason}
-              </div>
-            )}
-            {a.status === "cancelled" && a.cancelReason && (
-              <div
-                className="tiny"
-                style={{ color: "var(--danger)", marginTop: 4 }}
-              >
-                Cancelled: {a.cancelReason}
-              </div>
-            )}
-          </>
-        ) : (
-          <div className="small muted truncate">
-            {formatTime(a.startTime)} · {a.specialtyName}
+        {trailing && (
+          <div className="tiny muted nowrap" style={{ marginLeft: "auto" }}>
+            {trailing}
           </div>
         )}
       </div>
 
-      {trailing && (
-        <div className="tiny muted nowrap" style={{ marginLeft: "auto" }}>
-          {trailing}
-        </div>
-      )}
-
-      {actions}
+      {actions && <div className="appt-actions">{actions}</div>}
     </div>
   );
 }

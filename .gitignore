@@ -5,18 +5,16 @@ node_modules/
 .pnp.js
 
 # ---------- build output ----------
+# Regenerate with `npm --prefix client run build`. The API serves this
+# directory in production, so it is built on the host, not committed.
 dist/
 build/
-*.tsbuildinfo
 
 # ---------- environment / secrets ----------
+# Real values only. The two .env.example templates are tracked.
 .env
 .env.*
 !.env.example
-
-# ---------- runtime data (JSON datastore; migrated to PostgreSQL in Phase 2) ----------
-server/.data/
-.data/
 
 # ---------- logs ----------
 *.log
@@ -32,24 +30,31 @@ coverage/
 .cache/
 .vite/
 .eslintcache
-.eslintcache
+
+# ---------- documentation ----------
+# Long-form reference material kept for local reading, not published.
+# The schema itself is NOT ignored - that is part of the project.
+docs/
 
 # ---------- browser-automation output ----------
+# UI walkthrough screenshots. Not part of the application.
+recordings/
 playwright-report/
 test-results/
-# Browser-check recordings. The directory was only partially ignored, which left
-# walkthrough-report.json unignored and the folder visible in `git status` at
-# 41MB. Excluded in full.
-recordings/
 
 # ---------- editor / OS ----------
-.vscode/*
-!.vscode/settings.json
+.vscode/
 .idea/
 .DS_Store
 Thumbs.db
+Desktop.ini
+# Swap and backup files left behind by an interrupted edit.
+*.swp
+*.swo
+*~
+*.orig
+*.rej
 
 # ---------- misc ----------
 *.pid
 *.seed
-npm-debug.log*

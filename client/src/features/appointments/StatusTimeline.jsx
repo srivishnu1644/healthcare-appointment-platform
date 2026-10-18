@@ -138,5 +138,4 @@ export function StatusTimeline({ history }) {
   );
 }
 
-export { STATUS_LABEL, labelFor };
 export default StatusTimeline;

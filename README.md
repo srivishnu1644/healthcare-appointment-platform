@@ -1,4 +1,8 @@
-# MediCare v2 — Healthcare Appointment Platform
+<p align="center">
+  <img src="client/public/logo.svg" alt="BookMyDoc" width="240" />
+</p>
+
+# BookMyDoc v2 — Healthcare Appointment Platform
 
 A patient-centric healthcare appointment platform: discover doctors, check live
 availability, book, reschedule and cancel appointments, check in to a live
@@ -48,7 +52,7 @@ but each one's confirmation implies they will be seen next. Nobody can answer
 Meanwhile the clinic has no view of what is happening right now: who is waiting,
 which rooms are long, whether the reminder messages actually went out.
 
-MediCare addresses the three gaps that follow a booking:
+BookMyDoc addresses the three gaps that follow a booking:
 
 1. **Waiting is invisible.** A waiting room per provider per clinic day, with a
    computed position, visible to the patient and to the provider.
@@ -68,6 +72,10 @@ MediCare addresses the three gaps that follow a booking:
 - See real availability and book, reschedule or cancel
 - Check in on arrival and get a live position in the waiting room
 - Read in-app notifications and mark them read individually or all at once
+- Swipe a notification **left** to remove it and **right** to toggle it between read
+  and unread — both act the moment the finger lifts, with a timed undo for the
+  destructive one
+- Clear the whole inbox, or only the read half of it, from one menu
 - Ask the assistant how the system works
 - Optionally triage symptoms — **only with explicit consent**
 
@@ -163,8 +171,10 @@ Three further rules are enforced by the **schema**, not by application code:
 - a patient cannot hold two overlapping appointments;
 - a status change cannot escape the transition table.
 
-Two concurrent booking attempts are asserted by the test suite, not merely
-described.
+Two concurrent booking attempts resolve through the database, not through
+application code: the loser receives `409 SLOT_TAKEN` from a constraint it cannot
+bypass, and `npm run test:schema` proves each of those constraints actually fires
+by attempting the violation and requiring PostgreSQL to refuse it.
 
 ### A lesson worth recording
 
@@ -208,9 +218,10 @@ backstop underneath the application logic.
 
 ### Updates
 
-`QueueContext` owns a single poller for the whole client — running only while the
-tab is visible, never overlapping itself, and discarding stale responses via a
-ticket. A component that needs no live queue mounts no poller at all.
+`NotificationsContext` owns a single poller for the whole client — running only
+while the tab is visible, never overlapping itself, and discarding stale
+responses via a ticket. A component that needs no live notifications mounts no
+poller at all.
 
 ---
 
@@ -231,6 +242,45 @@ only the database can prevent that.
 Dedupe discriminators preserve genuine repeats: the destination slot for a
 reschedule, the start time for a reminder, the call time for a queue call.
 
+### Read state toggles in both directions
+
+`PATCH /api/notifications/:id/read` takes an optional `{ "read": boolean }`,
+defaulting to `true`, so the bodyless call keeps its original meaning while a swipe
+on a row the reader has already seen can send it back to the unread pile. One
+`UPDATE` with a `CASE`, not two statements — and deliberately without
+`AND read_at IS NULL`, which made "already read" indistinguishable from "not yours"
+and answered 404 the second time anyone tapped a row that was already read.
+
+### Notification ids are TEXT, and that is load-bearing
+
+`notifications.id` is `text PRIMARY KEY DEFAULT gen_random_uuid()::text`. Rows the
+application creates look like UUIDs, which is exactly what makes it tempting to
+validate them as `uuid` — and wrong for any database that came through the JSON
+import, which preserved every existing id verbatim (`notif_1`, `n-9f3ab21c`). The
+inbox then rendered rows the API refused to act on: the client was holding an id
+the validator had just seen in its own response, and rejected. The route validates a
+bounded string instead; the value only ever reaches a bound parameter, so there is
+nothing to inject either way.
+
+### Removal is soft, and reversible
+
+`DELETE /api/notifications/:id` stamps `deleted_at` rather than dropping the row,
+and every inbox query skips stamped rows. Two reasons:
+
+- **Undo is a real operation, not a decoration.** The client shows a timed undo;
+  if the row were really deleted, that button would be a lie. Un-stamping is one
+  `UPDATE`, and `POST /api/notifications/restore-all` puts a whole cleared inbox
+  back.
+- **The admin log stays honest.** A message being dismissed says nothing about
+  whether it was sent, so `GET /api/admin/notifications` keeps dismissed rows and
+  flags them.
+
+The `dedupe_key` is deliberately NOT released by a dismissal: the event still
+happened, so a retried booking must not be able to send the same message twice.
+
+Bulk clear is `DELETE /api/notifications?scope=read|all`, scoped to the caller in
+the `WHERE` clause like every other notification write.
+
 ### Delivery
 
 `notification_outbox` is drained by a background pass with a five-minute backoff
@@ -246,8 +296,8 @@ badge rather than implying a message was sent.
 ### The scheduler
 
 In-process, roughly every 15 minutes, **single-process and best-effort**.
-`DISABLE_SCHEDULER=1` turns it off; the test suites assert that it is off rather
-than assuming it.
+`DISABLE_SCHEDULER=1` turns it off, which is what you want on every instance but
+one if you ever run more than a single API process.
 
 Reminder timing is approximate: at most one interval late, never early.
 
@@ -305,13 +355,13 @@ consents to nothing, because nothing leaves the machine.
 |---|---|---|
 | Client | React + Vite | Fast builds; no UI framework dependency |
 | Client routing | React Router | Standard |
-| Client state | React Context | Two contexts (auth, queue) — a store library would be excess |
+| Client state | React Context | Three contexts — auth, notifications, toasts — where a store library would be excess |
 | Styling | Hand-written CSS with design tokens | No Tailwind, no component library |
 | API | Node.js + Express | Small, well understood |
 | Validation | Hand-written declarative middleware | No Zod/Joi |
 | Database | PostgreSQL 16 | Needs transactions, row locks and constraints |
 | Auth | JWT access tokens + rotating opaque refresh tokens | No session store |
-| Tests | Hand-written assertion suites over `node:test`-style runners | No Jest/Supertest |
+| Tests | One standalone schema-verification script | No Jest/Supertest |
 
 **Deliberately absent:** Docker, Kubernetes, Redis, Kafka, GraphQL, MongoDB,
 Convex, Tailwind, Zod, Jest, Supertest, TanStack Query, Swagger/OpenAPI,
@@ -345,23 +395,32 @@ rather than opening a second one against the same rows.
 
 ### Testing approach
 
-The suites are hand-written assertions, not a framework. The discipline that
-matters is **non-vacuity**: several tests were found to be passing for the wrong
-reason during development and rewritten. Specifically:
+There is one automated suite, and it is deliberately unusual: instead of asserting
+that valid input succeeds, it **attempts the violation and requires PostgreSQL to
+refuse it**. A constraint that exists but does not fire is the failure mode this
+catches, and it is the one an assertion on the happy path can never detect.
 
-- An injection test reloaded the page after dispatching, killing the in-flight
-  request — it asserted on nothing.
-- A visibility measurement zeroed its counter after dispatching, so it could only
-  ever observe zero.
-- Four database cast bugs were found by asking what a `500` means, then written
-  as "no malformed input may produce a 5xx".
+```bash
+npm --prefix server run test:schema
+```
+
+It covers the structural claims (every table present, every enum created, RLS
+enabled on *every* table, the hot query paths index-servable) and then the
+behavioural ones: overlapping slots, double-booked appointments, double check-in,
+cancellation without `cancelled_at`, and the seeded-data invariants. Fixtures are
+created and removed by the suite, so it leaves no residue.
+
+There is no unit-test framework and no mocking library. The value the constraints
+and the transaction boundaries provide is that most of what a unit test would
+mock here is a real database anyway.
 
 ---
 
 ## Database overview
 
-**23 tables**, 18 forward-only migrations, 8 enum types, and row-level security
-enabled on 16 tables.
+**23 tables**, 8 enum types, and row-level security on every table — the anon key
+can read the public directory and nothing else
+(see [`supabase/README.md`](server/supabase/README.md)).
 
 ### Core tables
 
@@ -393,18 +452,62 @@ enabled on 16 tables.
 - Row-level security isolates patient-owned rows
 
 > **RLS requires a non-superuser database role.** A superuser bypasses it
-> silently. See the deployment guide.
+> silently, with no error anywhere to tell you it is off. Connect as the table
+> owner, not `SUPERUSER`, and confirm with
+> `SELECT rolsuper FROM pg_roles WHERE rolname = '<your role>';`
 
-### Migrations
+### Schema
 
-Forward-only. There is no `down` migration, and `db:migrate:reset` is
-`DROP SCHEMA CASCADE`. **Nothing here should be described as reversible.**
+The schema is a **single file** —
+[`server/supabase/schema.sql`](server/supabase/schema.sql) — and it is the only
+route to it. It is written for platforms whose entry point is a SQL editor
+(Supabase, Neon, any hosted PostgreSQL) and for anyone who prefers one readable
+artifact to a directory of migrations. Apply it once, to a **fresh** database:
 
 ```bash
-npm run db:migrate:status    # applied and pending
-npm run db:migrate           # apply
-npm run db:migrate:reset     # DROP SCHEMA CASCADE + reapply - destroys all data
+npm run db:schema           # apply the single file to a FRESH database
 ```
+
+The file records its own revision in `schema_migrations`, so re-running it is a
+no-op and the applied state stays auditable. Applying it is **not reversible**;
+to start over on a disposable database, drop the schema first:
+
+```sql
+DROP SCHEMA public CASCADE; CREATE SCHEMA public;
+```
+
+`db:schema` refuses to run against a database that already holds the schema, and
+every statement in it is plain `CREATE`. **Later additions are therefore
+self-applying**: `src/db/ensureSchema.js` asks `information_schema` what is missing
+and applies only that, once per process, before the server accepts traffic. It runs
+on every boot (`npm start`, `npm run dev`) and can be run by hand:
+
+```bash
+npm run db:ensure     # apply what is missing, then exit
+```
+
+Check first, DDL second. `ADD COLUMN IF NOT EXISTS` is idempotent but not free — it
+takes an `ACCESS EXCLUSIVE` lock on the table even when it changes nothing — so a
+steady-state restart issues no DDL and takes no lock on a live table.
+
+It never throws. A role without DDL rights, or a slow catalogue query, produces a
+loud warning naming the exact statement to run, and a server that still starts: a
+boot that hangs on a slow database is indistinguishable from a crash. That is worth
+stating plainly because this exists to fix one specific failure — a query naming a
+column the database does not have is a **500**, and a 500 on the notification inbox
+is indistinguishable from an inbox with nothing in it. One missing column emptied the
+patient screen and the provider screen at once, with the data sitting there the whole
+time.
+
+### Supabase
+
+The API reaches Supabase as ordinary PostgreSQL over `DATABASE_URL` — no client
+library, no service-role key, nothing to rewrite. To stand a project up: create
+it, put the **Session pooler** connection string in `server/.env`, then either
+paste [`supabase/schema.sql`](server/supabase/schema.sql) into the SQL Editor or run
+`npm run db:schema`. [`supabase/README.md`](server/supabase/README.md) covers the
+connection-string pitfalls and the RLS model (the anon key reads the public
+directory and nothing else).
 
 ---
 
@@ -425,16 +528,16 @@ No global tooling, no database container, no API keys.
 
 ```bash
 # 1. a PostgreSQL database
-createdb medicare
-psql medicare -c "CREATE ROLE medicare_app LOGIN PASSWORD 'local-only';"
+createdb bookmydoc
+psql bookmydoc -c "CREATE ROLE bookmydoc_app LOGIN PASSWORD 'local-only';"
 
 # 2. point the API at it
-export DATABASE_URL="postgresql://medicare_app:local-only@localhost:5432/medicare"
+export DATABASE_URL="postgresql://bookmydoc_app:local-only@localhost:5432/bookmydoc"
 export JWT_SECRET="$(node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))")"
 export CORS_ORIGIN="http://localhost:5173"
 
 # 3. schema and demo data
-npm --prefix server run db:migrate
+npm --prefix server run db:schema
 npm --prefix server run db:seed
 
 # 4. run
@@ -453,8 +556,15 @@ npm --prefix client run dev     # client -> http://localhost:5173
 | Doctor | `doctor2@demo.com` | `doctor123` |
 | Admin | `admin@demo.com` | `admin123` |
 
-These are **published deliberately** as a demo convenience. They are rejected as
-production secrets: the application refuses to boot with them.
+These are **published deliberately** as a demo convenience, which is exactly why
+`npm run db:seed` must never be run against a production database — it would
+create working accounts whose passwords are written above.
+
+To be precise about what the application *does* enforce at boot: it refuses a
+production start without a `JWT_SECRET`, with one under 32 characters, or with
+one of a known list of placeholder secrets. It does **not** check these account
+passwords, and the seed script has no production guard of its own. Seeding
+production is prevented by procedure, not by code.
 
 ---
 
@@ -475,23 +585,28 @@ production secrets: the application refuses to boot with them.
 | `PORT` | `5000` | |
 | `NODE_ENV` | — | `production` enables the strict boot checks |
 | `APP_TIMEZONE` | `Asia/Kolkata` | The clinic's business timezone |
-| `JWT_EXPIRES_IN` | `900` | Access-token seconds |
-| `REFRESH_TOKEN_TTL_DAYS` | `7` | |
-| `JWT_ISSUER` | — | Claim added to issued tokens |
-| `BCRYPT_ROUNDS` | `12` | |
-| `CORS_ORIGIN` | — | |
+| `JWT_EXPIRES_IN` | `15m` | Access-token lifetime, as a duration string |
+| `REFRESH_TOKEN_TTL_DAYS` | `30` | Refresh-token lifetime |
+| `JWT_ISSUER` | `bookmydoc-api` | Claim added to issued tokens |
+| `BCRYPT_ROUNDS` | `12` | Password hashing cost |
+| `CORS_ORIGIN` | — | See above |
 
 ### Database
+
+`DATABASE_URL` on its own is enough; the `DB_*` variables are only consulted when
+`DB_HOST` is set.
 
 | Variable | Default |
 |---|---|
 | `DATABASE_URL` | — (overrides all `DB_*`) |
-| `DB_HOST` / `DB_PORT` | `localhost` / `5432` |
-| `DB_NAME` / `DB_USER` | `medicare` / `postgres` |
+| `DB_HOST` | — (no `DB_*` path when unset) |
+| `DB_PORT` | `5432` |
+| `DB_NAME` | `postgres` |
+| `DB_USER` | `postgres` |
 | `DB_PASSWORD` | — |
-| `DB_SSL` | — |
+| `DB_SSL` | auto for any non-localhost host |
 | `DB_POOL_MAX` | `10` |
-| `DB_ALLOW_POOLED_QUERY_IN_TX` | `0` |
+| `DB_ALLOW_POOLED_QUERY_IN_TX` | off |
 
 ### Notifications (all optional)
 
@@ -502,14 +617,15 @@ Unset means delivery is **simulated**, and the API says so.
 
 ### AI (all optional)
 
-`GEMINI_KEY`, `GEMINI_MODEL`, `ASSISTANT_ADAPTER`, `ASSIST_MAX_PER_MINUTE` (60)
+`GEMINI_KEY`, `GEMINI_MODEL`, `ASSIST_MAX_PER_MINUTE` (60)
 
 Unset means the assistant answers from the knowledge base only and triage uses
 the local rule engine.
 
 ### Scheduler
 
-`DISABLE_SCHEDULER=1` stops the in-process timer. The suites assert it is off.
+`DISABLE_SCHEDULER=1` stops the in-process timer. Set it on every instance but
+one if you ever run more than a single API process.
 
 ---
 
@@ -526,83 +642,34 @@ npm --prefix client run build         # production bundle
 npm --prefix client run preview
 
 # Database
-npm --prefix server run db:migrate
-npm --prefix server run db:migrate:status
-npm --prefix server run db:migrate:reset   # DESTRUCTIVE
-npm --prefix server run db:seed
-npm --prefix server run db:purge-sessions
+npm --prefix server run db:schema   # apply supabase/schema.sql (fresh database)
+npm --prefix server run db:ensure   # apply any pending additive schema change
+npm --prefix server run db:seed     # demo data
+npm --prefix server run test:schema # verify every constraint actually fires
 ```
 
 ---
 
 ## Testing
 
-Every suite is a standalone script under `server/scripts` — 17 suites,
-1,211 assertions in total. Run them **one at a
-time**: the auth rate limiter is per process (100 logins / 10 min), so concurrent
-suites produce spurious `429`s.
+The schema is verified by a suite that **proves the database rejects bad
+states** — it attempts each violation and requires PostgreSQL to refuse it, then
+cleans up after itself. Run it against a freshly seeded database:
 
 ```bash
-cd server
-
-npm run test:security      # authz, injection, IDOR, leakage
-npm run test:auth          # registration, login, refresh rotation, RBAC
-npm run test:directory     # public reference data
-npm run test:slots         # generation, availability, blocking
-npm run test:flow          # doctor workflow
-npm run test:appointments  # booking, conflicts, concurrency, transitions
-npm run test:queue         # check-in, positions, call-next, locks
-npm run test:room          # waiting-room model and privacy scoping
-npm run test:notifications # events, dedupe, claims, outbox, reads
-npm run test:assistant     # knowledge base, injection, consent, rate limit
-npm run test:admin         # role restrictions, visibility, filters
-npm run test:validation    # input validation and error contracts
-npm run test:audit         # Phase 18 security audit
-npm run test:integration   # the 14-step end-to-end walkthrough
-npm run test:docs          # documentation against the live router
-npm test                   # smoke
-npm run test:schema        # database invariants
+npm --prefix server run db:seed
+npm --prefix server run test:schema
 ```
 
-### Two ordering rules that matter
+It checks the structural claims (every table exists, every enum type was
+created, RLS is enabled on *every* table, the hot query paths are index-servable)
+and then the behavioural ones: overlapping slots, double-booked appointments,
+double check-in, cancellation without `cancelled_at`, an appointment whose doctor
+does not own its slot, and the daylight-sensitive seed invariants.
 
-1. **Restart the API between suites.** The rate limiter is per process.
-2. **`test:schema` runs against a freshly seeded database.** Several of its
-   checks assert invariants about the *seed data* — a finished appointment is
-   never on a future slot, and the recorded booked-slot count matches reality.
-   Running the behavioural suites first leaves fixtures that violate them, and
-   four checks fail with no defect involved.
-
-### Frontend
-
-The hook checks need **two** servers and the distinction matters:
-
-- the **dev server** serves `checks.html`, the harness page that mounts the real
-  hooks;
-- the **production preview** serves the built app the checks drive.
-
-`HARNESS_URL` defaults to `APP_URL`, so setting only `APP_URL` to the preview
-points the harness at a server that answers `/checks.html` with the SPA
-fallback, and the run dies in a timeout that looks like a broken harness. The
-harness now detects this and says so.
-
-```bash
-# terminal 1 - the API
-npm --prefix server run dev
-
-# terminal 2 - the production preview (the app the checks drive)
-npm --prefix client run build
-npm --prefix client run preview
-
-# terminal 3 - the dev server, which serves the harness page only
-npm --prefix client run dev -- --port 5174
-
-# then, from the repository root
-HARNESS_URL=http://localhost:5174 \
-APP_URL=http://localhost:4173 node scripts/hook-checks.mjs
-
-PART=12 node scripts/hook-checks.mjs   # run a single part while iterating
-```
+The seeded-data checks assert invariants about the *seed itself*, so run this
+against a fresh database — fixtures left behind by other activity will fail four
+of them with no defect involved.
 
 ---
 
@@ -610,36 +677,57 @@ PART=12 node scripts/hook-checks.mjs   # run a single part while iterating
 
 | Document | Covers |
 |---|---|
-| [`docs/API.md`](docs/API.md) | All 58 endpoints, with auth, roles, parameters, examples and errors |
-| [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Deployment guide, verified/not-verified table, backup and recovery |
-| [`docs/CI-CD-PLAN.md`](docs/CI-CD-PLAN.md) | Proposed pipeline — **pending approval, not implemented** |
-| [`docs/security-audit-phase18.md`](docs/security-audit-phase18.md) | Phase 18 findings: fixed, tested, unverified, deferred |
-| [`docs/RESUME.md`](docs/RESUME.md) | Resume-ready project summary |
-
-The API reference is checked by `npm run test:docs`, which parses it against the
-live Express router: every documented endpoint must exist, every route must be
-documented, and every error code it promises must exist in the source.
+| [`server/supabase/README.md`](server/supabase/README.md) | Applying the schema to a hosted PostgreSQL |
+| [`server/supabase/schema.sql`](server/supabase/schema.sql) | The complete schema, in one readable file |
 
 ---
 
 ## Deployment preparation
 
-Nothing has been deployed. See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the
-full guide and the explicit verified / not-verified table.
+Nothing has been deployed. The steps below were checked by running them
+locally against PostgreSQL 16.
 
 **Verified locally:** production build, backend startup, health endpoint, refusal
 to boot without a database, graceful `SIGTERM` shutdown, all four production
-environment guards, migration from empty, and scheduler lifecycle.
+environment guards, applying `schema.sql` to an empty database, and scheduler
+lifecycle.
 
 **Not verified — and not claimed:** any deployment to a real host, TLS
 termination, penetration testing, load performance, rollback, and recovery from a
 real backup. RPO and RTO are undetermined.
 
-### Migrations are forward-only
+### Running it in production
 
-There is no `down` migration. `db:migrate:reset` is `DROP SCHEMA CASCADE`. Rollback
-of an **application** is supported as long as migrations are additive; rollback of
-a **schema** means restoring a backup.
+The API can serve the built client itself, so a small deployment is one Node
+process in front of one PostgreSQL database.
+
+```bash
+# build the client — VITE_API_URL is baked in at BUILD time, so changing it
+# needs a rebuild, not a restart
+cd client && npm ci && VITE_API_URL=https://api.example.com/api npm run build
+
+# start the API; it serves client/dist as well as /api
+cd ../server && npm ci && NODE_ENV=production node index.js
+```
+
+Run it under a process supervisor. It handles `SIGINT` and `SIGTERM` itself and
+gives in-flight requests 10 seconds to finish before exiting.
+
+**Two constraints that bite:**
+
+- **`VITE_API_URL` is baked into the bundle at build time.** A client built
+  against a localhost API cannot be fixed at runtime — it needs rebuilding.
+- **One process, or the scheduler runs twice.** The reminder sweep is in-process.
+  If you run more than one API process, set `DISABLE_SCHEDULER=1` on all but one.
+
+Put TLS termination in front of it, and create a database role that is **not**
+`SUPERUSER` — see the RLS note under [Database overview](#database-overview).
+
+### The schema is forward-only
+
+Applying `schema.sql` is **not reversible** — it is plain `CREATE`, applied in one
+transaction. Rollback of an **application** is supported as long as schema
+changes are additive; rollback of a **schema** means restoring a backup.
 
 ---
 
@@ -665,7 +753,8 @@ a **schema** means restoring a backup.
 - `stripSecrets` runs as a second pass on the patient directory
 
 **Data protection**
-- Row-level security on 16 tables
+- Row-level security on every table; the Supabase anon key reads only the
+  public directory and holds no write privilege anywhere
 - The assistant prompt carries the question and nothing else
 - Triage consent enforced in the service, not the route
 - AI turns recorded without user or appointment ids
@@ -674,11 +763,8 @@ a **schema** means restoring a backup.
 - Credentials 100 / 10 min; session operations 600 / 10 min
 - Assistant 60 / min and triage 20 / min
 
-Full findings, including **nine unverified risks**, are in
-[`docs/security-audit-phase18.md`](docs/security-audit-phase18.md).
-
 > Automated checks are a floor, not a ceiling. **No penetration test has been
-> performed.** See §3 of the Phase 18 audit.
+> performed.**
 
 ---
 
@@ -690,11 +776,10 @@ Full findings, including **nine unverified risks**, are in
 | **Rate limits are per process** | N replicas allow N × the intended rate. |
 | **External delivery is at-least-once** | Only in-app rows are exactly-once. |
 | **Reminder timing is approximate** | At most one interval late, never early. |
-| **Room capacity not enforced** | `slots.max_queue` is stored but not applied. Deliberately deferred rather than half-implemented. |
 | **Triage limiter keyed by IP** | Unlike the assistant limiter beside it. A clinic behind one NAT can throttle uninvolved patients. Found, documented, unfixed. |
 | **AI output not moderated** | Labelled as machine-generated; no moderation service. |
 | **No live model verified** | No credential has ever worked. |
-| **Migrations forward-only** | No `down`; reset is destructive. |
+| **Schema changes are forward-only** | `schema.sql` is plain `CREATE` applied in one transaction; there is no `down`. |
 | **Privileged reads unlogged** | No audit trail of who read which patient's data. |
 | **No MFA, lockout or CSRF** | Rate limiting only; CSRF safe while token-authenticated. |
 | **RPO/RTO undetermined** | No restore drill performed. |
@@ -705,7 +790,6 @@ Full findings, including **nine unverified risks**, are in
 
 **Correctness and scale**
 
-- Enforce `slots.max_queue` so a room cannot exceed its configured capacity
 - Replace the in-process scheduler with an external job runner, enabling multiple
   replicas
 - Move rate-limit counters to a shared store so limits are global rather than
@@ -716,7 +800,7 @@ Full findings, including **nine unverified risks**, are in
 
 - Audit-log privileged reads of patient data
 - Session invalidation on password change, and a global "sign out everywhere"
-- Dependency scanning in CI once CI/CD is approved
+- Dependency scanning in CI
 - Penetration testing by someone who has not read this codebase
 
 **Product**
@@ -729,7 +813,7 @@ Full findings, including **nine unverified risks**, are in
 
 **Operations**
 
-- CI/CD, once approved — the pipeline design is already documented
+- CI/CD — the deploy steps below are manual
 - Structured log shipping with retention limits
 - Backup automation with a verified restore drill
 
@@ -738,6 +822,6 @@ Full findings, including **nine unverified risks**, are in
 ## Licence and demo data
 
 This is a demonstration project. The demo accounts and their passwords are
-published on purpose so the system can be explored, and the application refuses
-to start in production with those values as secrets. The seeded names,
-clinics and identifiers are fictional.
+published on purpose so the system can be explored. Nothing in the code prevents
+those accounts being created in production — do not run `npm run db:seed` against
+a real database. The seeded names, clinics and identifiers are fictional.

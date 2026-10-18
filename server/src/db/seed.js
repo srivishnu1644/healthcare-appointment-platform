@@ -36,7 +36,7 @@ const SPECIALTIES = [
 ];
 
 const FACILITIES = [
-  ["MediCare City Hospital", "Bengaluru", "12 MG Road, Bengaluru", "Multi-specialty", 4.6],
+  ["BookMyDoc City Hospital", "Bengaluru", "12 MG Road, Bengaluru", "Multi-specialty", 4.6],
   ["Sunrise Health Center", "Bengaluru", "44 Indiranagar, Bengaluru", "Clinic", 4.3],
   ["Apollo Care Clinic", "Mumbai", "8 Linking Road, Mumbai", "Multi-specialty", 4.5],
   ["GreenLife Clinic", "Delhi", "77 Nehru Place, Delhi", "Clinic", 4.2],
@@ -54,9 +54,9 @@ const SERVICES = [
 
 // [name, specialty, facility, city]
 const DOCTORS = [
-  ["Dr. Ananya Rao", "Cardiology", "MediCare City Hospital", "Bengaluru"],
+  ["Dr. Ananya Rao", "Cardiology", "BookMyDoc City Hospital", "Bengaluru"],
   ["Dr. Rohan Mehta", "Dermatology", "Sunrise Health Center", "Bengaluru"],
-  ["Dr. Priya Sharma", "Pediatrics", "MediCare City Hospital", "Bengaluru"],
+  ["Dr. Priya Sharma", "Pediatrics", "BookMyDoc City Hospital", "Bengaluru"],
   ["Dr. Karthik Iyer", "Orthopedics", "Lakeview Medical Center", "Chennai"],
   ["Dr. Sneha Kulkarni", "Neurology", "Apollo Care Clinic", "Mumbai"],
   ["Dr. Arjun Nair", "General Medicine", "GreenLife Clinic", "Delhi"],
@@ -120,7 +120,7 @@ const dayOffset = (n) => {
 const seed = async () => {
   const already = await one("SELECT count(*)::int AS c FROM users");
   if (already.c > 0) {
-    log.warn(`${already.c} user(s) already present — run migrate.js --reset first to reseed`);
+    log.warn(`${already.c} user(s) already present — reseeding needs an empty database`);
     return;
   }
 

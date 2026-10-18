@@ -39,7 +39,7 @@ export const provider = asyncHandler(async (req, res) =>
 
 /* ------------------------------------------------------------------ *
  *  POST /api/ai/assist                                              *
- *  How MediCare works + general healthcare information                *
+ *  How BookMyDoc works + general healthcare information                *
  * ------------------------------------------------------------------ */
 export const assist = asyncHandler(async (req, res) => {
   // Only the question crosses into the service. No appointment, no profile, no

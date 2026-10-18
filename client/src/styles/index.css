@@ -1,5 +1,5 @@
 /* ==================================================================
-   MediCare — design tokens + base styles
+   BookMyDoc — design tokens + base styles
    Single stylesheet, CSS custom properties, no UI library.
    ================================================================== */
 
@@ -53,6 +53,33 @@
 
   --header-h: 64px;
   --maxw: 1200px;
+
+  /* liquid glass — one neutral material for the interface layer.
+     The glass carries no color of its own; it only shows what is
+     behind it. Values are reused by the Liquid Glass section at the
+     end of this file. */
+  --lg-blur: 22px;
+  --lg-fill: rgba(255, 255, 255, 0.58);
+  /* A MODAL surface, not a card surface, so it sits far closer to opaque than
+     `--lg-fill` does. At 0.74 it composited against the dark backdrop scrim
+     into a muddy grey-blue, which made the panel darker than the plain white
+     inputs sitting on it - the dialog read as grey while its own controls read
+     as white. 0.94 is white with a hint of the page behind it, and the 30px
+     blur underneath still supplies that hint. */
+  --lg-fill-strong: rgba(255, 255, 255, 0.94);
+  --lg-edge: rgba(255, 255, 255, 0.66);
+  --lg-spec: inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  --lg-spec-strong:
+    inset 0 1px 0 rgba(255, 255, 255, 1), inset 0 -1px 0 rgba(15, 23, 42, 0.03);
+  --lg-hairline: rgba(15, 23, 42, 0.07);
+  --lg-shadow-sm:
+    0 1px 2px rgba(15, 23, 42, 0.05), 0 8px 24px -16px rgba(15, 23, 42, 0.3);
+  --lg-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.05), 0 18px 48px -28px rgba(15, 23, 42, 0.34);
+  --lg-shadow-float:
+    0 2px 8px rgba(15, 23, 42, 0.07),
+    0 36px 90px -40px rgba(15, 23, 42, 0.45);
+  --lg-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 
 * {
@@ -79,7 +106,7 @@ body {
   font-size: 15px;
   line-height: 1.55;
   color: var(--gray-800);
-  background: var(--gray-50);
+  background: #eaf2ff;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -243,9 +270,9 @@ a:hover {
 /* ---------------- card ---------------- */
 .card {
   background: #fff;
-  border: 1px solid var(--gray-200);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-xs);
+  border: 1px solid #e3ecfb;
+  border-radius: 14px;
+  box-shadow: 0 2px 10px rgba(37, 99, 235, 0.06);
 }
 
 .card-pad {
@@ -742,16 +769,435 @@ a:hover {
   gap: 0.6rem;
 }
 
+/* ---------------- slot generator ----------------
+   Scoped to the "Add appointment slots" dialog. Times are picked from a grid
+   of chips rather than typed into a textarea, so every control here is a
+   button/input first and a label second. */
+.slotgen-quick {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+/* A date/time input sharing a row with buttons. `.input`'s `width: 100%` would
+   otherwise make it swallow the whole row; this is the one that grows instead,
+   `slotgen-narrow` the one that stays its natural width. */
+.slotgen-fill {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+}
+.slotgen-narrow {
+  flex: 0 0 auto;
+  width: auto;
+}
+.slotgen-hint {
+  font-size: 0.76rem;
+  color: var(--gray-500);
+  margin-top: 0.4rem;
+}
+
+.slotgen-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(74px, 1fr));
+  gap: 0.4rem;
+  /* The grid grows with the duration step, so it is capped and scrolls rather
+     than pushing the dialog's own scrollbar to three screens. */
+  max-height: 172px;
+  overflow-y: auto;
+  padding: 0.15rem;
+  margin: -0.15rem;
+}
+.slotgen-chip {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  padding: 0.4rem 0.2rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--gray-300);
+  background: #fff;
+  color: var(--gray-700);
+  cursor: pointer;
+  text-align: center;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+.slotgen-chip:hover:not(:disabled) {
+  border-color: var(--brand-500);
+  background: var(--brand-50);
+}
+.slotgen-chip[aria-pressed="true"] {
+  background: var(--brand-600);
+  border-color: var(--brand-600);
+  color: #fff;
+  font-weight: 600;
+}
+.slotgen-chip:disabled {
+  cursor: not-allowed;
+  color: var(--gray-400);
+  /* Struck through rather than merely grey: this is a time the doctor ALREADY
+     published, which reads differently from a time that is merely unselected. */
+  text-decoration: line-through;
+  background: var(--gray-50);
+}
+.slotgen-chip:focus-visible {
+  outline: 2px solid var(--brand-500);
+  outline-offset: 1px;
+}
+
+/* Segmented control — for the small closed sets (duration, mode). A <select>
+   hides the options behind a click and a dropdown. */
+.slotgen-seg {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+.slotgen-seg-btn {
+  padding: 0.42rem 0.8rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-family: inherit;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--gray-300);
+  background: #fff;
+  color: var(--gray-700);
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+.slotgen-seg-btn:hover {
+  border-color: var(--brand-500);
+  background: var(--brand-50);
+}
+.slotgen-seg-btn[aria-pressed="true"] {
+  background: var(--brand-600);
+  border-color: var(--brand-600);
+  color: #fff;
+}
+.slotgen-seg-btn:focus-visible {
+  outline: 2px solid var(--brand-500);
+  outline-offset: 1px;
+}
+
+/* What the provider is about to create, stated before they commit to it. */
+.slotgen-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  padding: 0.85rem 1rem;
+  border-radius: var(--radius);
+  background: var(--brand-50);
+  border: 1px solid var(--brand-100);
+}
+.slotgen-summary-n {
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--brand-700);
+}
+.slotgen-summary-label {
+  font-size: 0.74rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--brand-600);
+}
+.slotgen-summary-body {
+  min-width: 0;
+}
+/* The times themselves, one `start – end` per stretch of back-to-back slots.
+   A day with breaks in it produces a longer string than the old single span,
+   so it wraps rather than being cut off, and carries a little more weight than
+   the muted line under it because it is the part being read. */
+.slotgen-summary-times {
+  font-weight: 600;
+  color: var(--gray-800);
+  overflow-wrap: anywhere;
+}
+
+/* --- delete mode -----------------------------------------------------
+   Two controls per row, because removing is two different intents:
+
+     the CARD  selects, and the footer removes the selection together;
+     the MINUS removes that one slot immediately.
+
+   Both are always on screen, so neither has to be discovered, and the
+   single-slot path never has to route through a selection the provider then
+   has to go and confirm. */
+.slotgen-delseltools {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+.slotgen-selbtn {
+  padding: 0.3rem 0.65rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-family: inherit;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--gray-300);
+  background: #fff;
+  color: var(--gray-600);
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+.slotgen-selbtn:hover:not(:disabled) {
+  border-color: var(--brand-500);
+  background: var(--brand-50);
+  color: var(--brand-700);
+}
+.slotgen-selbtn:focus-visible {
+  outline: 2px solid var(--brand-500);
+  outline-offset: 1px;
+}
+.slotgen-selbtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.slotgen-dellist {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-height: 268px;
+  overflow-y: auto;
+  /* A hair of padding so a focused row's outline is not flush against the
+     scroll container's edge. Nothing hangs outside a row any more, so this
+     does not have to fight the clipping that `overflow-y: auto` implies for
+     `overflow-x`. */
+  padding: 0.15rem;
+}
+.slotgen-delchip {
+  display: flex;
+  align-items: stretch;
+  gap: 0.3rem;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  background: #fff;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+/* Selected: the danger tint plus a ring, so the state survives being read at
+   a glance by someone who has not internalised "this goes away later". */
+.slotgen-delchip-marked {
+  background: var(--danger-bg);
+  border-color: rgba(220, 38, 38, 0.42);
+  box-shadow: inset 0 0 0 1px rgba(220, 38, 38, 0.16);
+}
+/* A slot with an appointment against it. Not merely dimmed: the dashed border
+   and the missing minus say "you cannot touch this", which is the fact. */
+.slotgen-delchip-locked {
+  background: var(--gray-50);
+  border-style: dashed;
+  border-color: var(--gray-300);
+}
+.slotgen-delchip-locked > * {
+  opacity: 0.55;
+}
+/* This one is mid-request. The row keeps its place rather than collapsing, so
+   the list does not reflow under the pointer while the click is landing. */
+.slotgen-delchip-busy {
+  background: var(--gray-50);
+  border-color: var(--gray-300);
+}
+
+.slotgen-delchip-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0.5rem 0.65rem;
+  font-family: inherit;
+  color: inherit;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.slotgen-delchip-main:hover:not(:disabled) {
+  background: rgba(220, 38, 38, 0.05);
+}
+.slotgen-delchip-main[aria-pressed="true"]:hover:not(:disabled) {
+  background: rgba(220, 38, 38, 0.11);
+}
+.slotgen-delchip-main:focus-visible {
+  /* Inset: the row's own border is only 1px, and a 2px outset ring would be
+     clipped by the list's scroll container. */
+  outline: 2px solid var(--brand-600);
+  outline-offset: -2px;
+}
+.slotgen-delchip-main:disabled {
+  cursor: not-allowed;
+}
+
+.slotgen-delchip-x {
+  flex: 0 0 auto;
+  align-self: center;
+  display: inline-grid;
+  place-items: center;
+  /* 30px, not 24px: this is now one of two controls on the row and is the
+     only one that acts immediately, so it gets a touch target that clears the
+     24px guideline without the row growing noticeably. */
+  width: 30px;
+  height: 30px;
+  margin-right: 0.35rem;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--gray-300);
+  background: #fff;
+  color: var(--gray-500);
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease,
+    border-color 0.12s ease;
+}
+.slotgen-delchip-x svg {
+  width: 14px;
+  height: 14px;
+}
+.slotgen-delchip-x:hover:not(:disabled) {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+.slotgen-delchip-x:focus-visible {
+  outline: 2px solid var(--brand-600);
+  outline-offset: 2px;
+}
+.slotgen-delchip-x:disabled {
+  cursor: not-allowed;
+  background: var(--gray-100);
+  border-color: var(--gray-300);
+  color: var(--gray-300);
+  /* Cancelled, not merely greyed: it is unavailable, and the reason is on the
+     row itself. */
+  opacity: 1;
+}
+
+/* --- delete-mode footer
+   The one-row footer could not carry two actions: a left-aligned destructive
+   button beside a right-aligned live count put "Done" and "N slots will be
+   deleted" in the same reading, and neither looked like the other.
+
+   So the destructive action gets its own full-width bar above the navigation
+   row. Two zones, one job each:
+
+     the BAR     appears only while something is selected, states the number,
+                 and is the only thing in the dialog that removes a selection.
+     the ROW     says what the mode is doing, and carries Cancel / Done in the
+                 usual right-hand position - Done no longer commits anything,
+                 so it is safe to read as "back". */
+.slotgen-delfoot {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.slotgen-delfoot-bar {
+  display: flex;
+  align-items: center;
+  /* Wraps rather than crushing: at a phone width the Delete button takes its
+     own line instead of squeezing the sentence that explains what it does. */
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  padding: 0.5rem 0.5rem 0.5rem 0.8rem;
+  border: 1px solid rgba(220, 38, 38, 0.32);
+  border-radius: var(--radius);
+  background: var(--danger-bg);
+  animation: slotgen-delfoot-in 0.18s var(--lg-ease);
+}
+.slotgen-delfoot-bar > svg {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  color: var(--danger);
+}
+.slotgen-delfoot-bar-text {
+  flex: 1 1 11rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  font-size: 0.82rem;
+  font-weight: 650;
+  color: #991b1b;
+  line-height: 1.3;
+}
+.slotgen-delfoot-bar-hint {
+  font-size: 0.74rem;
+  font-weight: 500;
+  color: #b91c1c;
+  opacity: 0.9;
+}
+/* Holds the button right of the sentence when they share a line, and keeps it
+   right-aligned when it has wrapped onto its own. */
+.slotgen-delfoot-bar > .btn {
+  margin-left: auto;
+}
+.slotgen-delfoot-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+/* Grows to fill rather than pushing the buttons along with a `.spacer`: only a
+   flexible item can also shrink, so on a narrow dialog the sentence gives way
+   and wraps under the buttons rather than overflowing beside them. */
+.slotgen-delfoot-row > .small {
+  flex: 1 1 13rem;
+  min-width: 0;
+}
+@keyframes slotgen-delfoot-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* The bar's arrival is the confirmation that a selection is armed. It is
+   decoration, not information: the count and the button are both readable
+   with no motion at all. */
+@media (prefers-reduced-motion: reduce) {
+  .slotgen-delfoot-bar {
+    animation: none;
+  }
+}
+
+/* The entry point to delete mode from the add form. Left-aligned in the footer
+   because it is the way into the other half of this dialog, not the
+   alternative to the primary action on the right. */
+.slotgen-del-toggle {
+  gap: 0.4rem;
+  margin-right: auto;
+}
+
 /* ---------------- toast ---------------- */
 .toast-wrap {
   position: fixed;
-  bottom: 1.25rem;
+  /* Below the sticky header, top-right: keeps clear of the chat bubble in
+     the bottom-right corner and never covers page controls. */
+  top: calc(var(--header-h) + 1rem);
   right: 1.25rem;
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
   z-index: 300;
-  max-width: 380px;
+  max-width: min(380px, calc(100vw - 2.5rem));
 }
 .toast {
   padding: 0.75rem 1rem;
@@ -777,7 +1223,7 @@ a:hover {
 @keyframes slideIn {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(-8px);
   }
   to {
     opacity: 1;
@@ -797,6 +1243,14 @@ a:hover {
   grid-template-columns: 300px 1fr;
   gap: 1.25rem;
   align-items: start;
+}
+/* Grid items default to `min-width: auto`, which lets a wide child (a nowrap
+   fee column, a chip strip) force the whole track wider than the viewport on
+   phones. Zeroing the minimum lets the tracks shrink to the screen; inner
+   content wraps or scrolls inside its own card instead. */
+.split > *,
+.split-left > * {
+  min-width: 0;
 }
 
 .sticky-side {
@@ -862,10 +1316,20 @@ a:hover {
 }
 
 /* responsive */
+/* The inverse of `hide-sm`: shown only where the full nav collapses (≤900px).
+   Above that the nav itself is on screen, so the hamburger would be a second
+   way to reach the same links — a duplicate, not a convenience. */
+.show-sm {
+  display: none;
+}
+
 @media (max-width: 900px) {
   .split,
   .split-left {
-    grid-template-columns: 1fr;
+    /* minmax(0, 1fr), not 1fr: a plain 1fr track still grows to fit the
+       widest child's min-content, which pushed the mobile layout ~130px past
+       the viewport (doctor directory) and ~60px (booking panel). */
+    grid-template-columns: minmax(0, 1fr);
   }
   .grid-4 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -876,12 +1340,31 @@ a:hover {
   .sticky-side {
     position: static;
   }
-  /* Between 600px and 900px the full nav, the bell and the account controls do
-     not fit beside the brand, and the header spilled past the viewport. They
-     collapse here and the drawer takes over, which is what `hide-sm` always
-     meant; leaving it at 600px was the inconsistency. */
+}
+
+/* The header's own tier boundary, deliberately LATER than the 900px block above.
+ *
+ * Measured, not guessed. The bar carries brand (133px) + the five nav links
+ * (499px) + bell (34px) + account cluster (124px) + sign out (76px) at a 24px
+ * gap, so it needs ~1024px before anything has to give way. The nav holds
+ * `flex: 1` and the spacer takes the slack, which is right - but below ~1020px
+ * the slack runs out and the account cluster, the only item allowed to shrink
+ * past its own content, collapses rather than truncating: measured at 950px the
+ * name was 7px wide and at 901px it was 0px. The whole cluster vanished.
+ *
+ * So 900px was too low a line at which to hand the header to the drawer. At
+ * 1024px the bar either fits or it does not, and there is no band in between
+ * where the controls are on screen but unusable.
+ *
+ * `.hide-sm` covers the nav, the bell, the account cluster and sign out, and the
+ * drawer carries all four: its head has the avatar and email, its nav has
+ * Profile and Notifications, its foot has sign out. Nothing is lost. */
+@media (max-width: 1024px) {
   .hide-sm {
     display: none !important;
+  }
+  .show-sm {
+    display: inline-flex;
   }
 }
 
@@ -946,4 +1429,4046 @@ a:hover {
   overflow: visible;
   clip: auto;
   white-space: normal;
+}
+
+/* ==================================================================
+   BookMyDoc AI glow-up — React-Bits style, dependency-free
+   Aurora hero + split reveal + shiny + 3D tilt/spotlight + float3d
+   ================================================================== */
+
+.hero-ai {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(1200px 500px at 15% -10%, rgba(124, 58, 237, 0.55), transparent 60%),
+    radial-gradient(1000px 480px at 90% 10%, rgba(34, 211, 238, 0.4), transparent 60%),
+    linear-gradient(135deg, #0b1026 0%, #131b45 45%, #0b3b6e 100%);
+  color: #fff;
+}
+
+.rb-aurora { position: relative; isolation: isolate; }
+.rb-aurora-orb {
+  position: absolute; border-radius: 50%; filter: blur(70px);
+  opacity: 0.65; z-index: 0; pointer-events: none;
+  mix-blend-mode: screen;
+}
+.rb-aurora-orb.orb-a {
+  width: 520px; height: 520px; left: -140px; top: -160px;
+  background: radial-gradient(circle at 30% 30%, #7c3aed, #2563eb 65%, transparent 70%);
+  animation: drift-a 14s ease-in-out infinite alternate;
+}
+.rb-aurora-orb.orb-b {
+  width: 460px; height: 460px; right: -120px; top: -80px;
+  background: radial-gradient(circle at 60% 40%, #22d3ee, #3b82f6 60%, transparent 70%);
+  animation: drift-b 18s ease-in-out infinite alternate;
+}
+.rb-aurora-orb.orb-c {
+  width: 620px; height: 320px; left: 30%; bottom: -180px;
+  background: radial-gradient(ellipse, rgba(236,72,153,0.55), rgba(59,130,246,0.35) 60%, transparent 70%);
+  animation: drift-a 20s ease-in-out infinite alternate-reverse;
+}
+.rb-aurora-grid {
+  position: absolute; inset: 0; z-index: 0; pointer-events: none; opacity: 0.22;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.14) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.14) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(700px 380px at 50% 20%, #000 60%, transparent 100%);
+}
+.rb-aurora-content { position: relative; z-index: 1; }
+
+@keyframes drift-a {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(60px, 40px, 0) scale(1.12); }
+}
+@keyframes drift-b {
+  from { transform: translate3d(0, 0, 0) scale(1.05); }
+  to { transform: translate3d(-70px, 30px, 0) scale(0.95); }
+}
+
+.hero-glass {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+.hero-glass .input {
+  background: rgba(255, 255, 255, 0.94);
+  border-color: transparent;
+}
+.grad-text {
+  background: linear-gradient(90deg, #fff, #a5f3fc 35%, #c4b5fd 65%, #f9a8d4);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+
+/* Split reveal */
+.rb-split-part {
+  display: inline-block; opacity: 0;
+  transform: translateY(14px) rotateX(35deg);
+  filter: blur(4px);
+  transition: opacity 0.6s ease, transform 0.6s cubic-bezier(0.2, 0.7, 0.2, 1), filter 0.6s ease;
+  will-change: transform, opacity;
+}
+.rb-split.is-in .rb-split-part { opacity: 1; transform: none; filter: none; }
+
+/* Shiny sweep */
+.rb-shiny {
+  position: relative; display: inline-block;
+  background: linear-gradient(110deg, #fff 30%, #fef08a 45%, #fff 60%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: shine var(--shine-speed, 3.5s) linear infinite;
+}
+@keyframes shine { from { background-position: 200% 0; } to { background-position: -120% 0; } }
+
+/* 3D tilt + spotlight card */
+.rb-tilt {
+  --rx: 0deg; --ry: 0deg;
+  perspective: 900px;
+}
+.rb-tilt-inner {
+  position: relative;
+  transform: rotateX(var(--rx)) rotateY(var(--ry));
+  transform-style: preserve-3d;
+  transition: transform 0.18s ease-out;
+  border-radius: inherit;
+}
+.rb-tilt:hover .rb-tilt-inner { transition: transform 0.08s ease-out; }
+.rb-tilt-inner::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  pointer-events: none; opacity: 0; transition: opacity 0.2s ease;
+  background: radial-gradient(420px circle at var(--mx, 50%) var(--my, 50%), var(--spot, rgba(59,130,246,0.22)), transparent 65%);
+}
+.rb-tilt:hover .rb-tilt-inner::before { opacity: 1; }
+.rb-tilt-inner::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  background: linear-gradient(115deg, transparent 40%, rgba(255,255,255,0.28) 48%, transparent 56%);
+  opacity: 0; mix-blend-mode: screen;
+}
+.rb-tilt:hover .rb-tilt-inner::after { opacity: 0.7; }
+
+/* Floating 3D deco */
+.rb-float3d { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+.rb-float3d span { position: absolute; display: block; }
+.f-cube { width: 54px; height: 54px; transform: rotateX(24deg) rotateY(32deg); border-radius: 12px;
+  background: linear-gradient(135deg, rgba(255,255,255,0.35), rgba(255,255,255,0.06));
+  border: 1px solid rgba(255,255,255,0.35); box-shadow: 0 18px 40px rgba(0,0,0,0.3); animation: floaty 7s ease-in-out infinite; }
+.f-cube.c1 { right: 12%; top: 18%; }
+.f-cube.c2 { right: 22%; bottom: 18%; width: 36px; height: 36px; animation-delay: -3s; }
+.f-ring { width: 90px; height: 90px; border-radius: 50%; border: 10px solid rgba(34,211,238,0.35);
+  box-shadow: 0 0 40px rgba(34,211,238,0.35), inset 0 0 24px rgba(255,255,255,0.15); animation: floaty 9s ease-in-out infinite; }
+.f-ring.r1 { left: 6%; bottom: 14%; }
+.f-ring.r2 { right: 8%; top: 8%; width: 56px; height: 56px; border-width: 8px; animation-delay: -2s; }
+.f-plus { color: rgba(255,255,255,0.7); font-weight: 800; font-size: 1.6rem; text-shadow: 0 0 18px rgba(124,58,237,0.8); animation: floaty 6s ease-in-out infinite; }
+.f-plus.p1 { left: 14%; top: 22%; } .f-plus.p2 { right: 30%; top: 12%; animation-delay: -4s; }
+.f-dot { width: 10px; height: 10px; border-radius: 50%; background: #f0abfc; box-shadow: 0 0 18px #f0abfc; animation: floaty 5s ease-in-out infinite; }
+.f-dot.d1 { left: 45%; top: 12%; } .f-dot.d2 { left: 70%; bottom: 22%; animation-delay: -1.5s; background: #67e8f9; box-shadow: 0 0 18px #67e8f9; }
+.f-dot.d3 { left: 26%; bottom: 28%; animation-delay: -2.6s; background: #fde68a; box-shadow: 0 0 18px #fde68a; }
+@keyframes floaty { 0%,100% { transform: translateY(0) rotate(0deg); } 50% { transform: translateY(-16px) rotate(6deg); } }
+
+/* AI pills + pulse glow button */
+.ai-pill { background: rgba(255,255,255,0.14) !important; color: #fff !important; border: 1px solid rgba(255,255,255,0.22); backdrop-filter: blur(8px); }
+.ai-pill:hover { background: rgba(255,255,255,0.26) !important; text-decoration: none; }
+.btn-glow { position: relative; box-shadow: 0 0 0 1px rgba(255,255,255,0.2), 0 10px 30px rgba(59,130,246,0.55); }
+.btn-glow::after { content: ""; position: absolute; inset: -2px; border-radius: 12px; padding: 2px;
+  background: linear-gradient(110deg, #22d3ee, #818cf8, #e879f9, #22d3ee); background-size: 250% 100%;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude;
+  opacity: 0.7; animation: shine 4s linear infinite; pointer-events: none; }
+
+.ai-card { position: relative; overflow: hidden; background: linear-gradient(180deg, #111736 0%, #0d1230 100%); color: #e2e8f0; border: 1px solid rgba(129,140,248,0.35); }
+.ai-card::before { content: ""; position: absolute; inset: -40% -20%; background: conic-gradient(from 0deg, transparent, rgba(34,211,238,0.25), transparent 30%, rgba(232,121,249,0.22) 50%, transparent 70%); animation: spin-slow 9s linear infinite; pointer-events: none; }
+.ai-card > * { position: relative; z-index: 1; }
+@keyframes spin-slow { to { transform: rotate(360deg); } }
+
+/* ==================================================================
+   Oris theme — tokens taken from the reference template's own CSS
+   primary #3365e2 · ink #13314a · hero gradient to-top 0→100
+   ================================================================== */
+
+:root {
+  --oris-primary: #3365e2;
+  --oris-primary-light: #4a78e7;
+  --oris-secondary: #13314a;
+  --oris-mid: #0f283c;
+  --oris-deep: #0a1b2a;
+  --oris-hero: linear-gradient(
+    to top,
+    #3365e2 0%,
+    #3365e2 20%,
+    #4a78e7 40%,
+    #789ef1 60%,
+    #b9d0fb 80%,
+    #ffffff 100%
+  );
+}
+
+body {
+  font-family:
+    "DM Sans",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    sans-serif;
+  background: #fff;
+}
+
+/* The reference sets its display type at `font-normal` with tight leading and
+   negative tracking. The app's own headings are bold, which is the single
+   biggest visual difference between this and the reference. */
+h1,
+h2,
+h3 {
+  font-weight: 400;
+  letter-spacing: -0.035em;
+  line-height: 1.12;
+  color: var(--oris-secondary);
+}
+
+.oris-hero {
+  position: relative;
+  min-height: 78vh;
+  display: flex;
+  align-items: flex-end;
+  background: var(--oris-hero);
+  overflow: hidden;
+}
+/* The dotted texture that sits over the lower, bluer part of the gradient. */
+.oris-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.55) 1.5px, transparent 1.5px);
+  background-size: 22px 22px;
+  mask-image: linear-gradient(to bottom, transparent 25%, #000 75%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 25%, #000 75%);
+  opacity: 0.5;
+}
+.oris-hero-inner {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  padding: 0 2.5vw 6vw;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4vw;
+  align-items: end;
+}
+.oris-display {
+  font-size: 4.2vw;
+  font-weight: 400;
+  line-height: 1.12;
+  letter-spacing: -0.035em;
+  color: #fff;
+  margin: 0;
+  max-width: 14ch;
+}
+.oris-lead {
+  font-size: 1.15vw;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.92);
+  max-width: 34ch;
+  margin: 0;
+}
+
+.oris-stat-card {
+  background: #fff;
+  border-radius: 2vw;
+  padding: 2vw;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 1rem;
+}
+.oris-stat-card h3 {
+  font-size: 2.4vw;
+  color: var(--oris-secondary);
+  margin: 0;
+}
+.oris-stat-card p {
+  font-size: 1.15vw;
+  color: var(--oris-secondary);
+  margin: 0.25rem 0 0;
+}
+
+/* The pill CTA from the reference header, including the leading dot. */
+.oris-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  height: 2.9rem;
+  padding: 0 1.5rem;
+  border-radius: 999px;
+  background: var(--oris-primary);
+  color: #fff;
+  font-weight: 500;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  transition: background 0.25s ease, transform 0.25s ease;
+  text-decoration: none;
+}
+.oris-pill:hover {
+  background: var(--oris-primary-light);
+  text-decoration: none;
+  transform: translateY(-1px);
+}
+.oris-pill .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+}
+
+/* Section label: tiny dot + caption, used throughout the reference. */
+.oris-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1.05rem;
+  color: var(--oris-secondary);
+}
+.oris-eyebrow .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--oris-secondary);
+}
+
+/* Odometer stat: the digit column is clipped to one line and animated. */
+.oris-figure {
+  font-size: 3.4vw;
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: var(--oris-secondary);
+}
+.oris-figure-label {
+  font-size: 1.05rem;
+  color: var(--oris-secondary);
+  margin-top: 0.6rem;
+  max-width: 16ch;
+  line-height: 1.35;
+}
+
+/* Marquee of tall treatment cards, as in the reference. */
+.oris-marquee {
+  display: flex;
+  gap: 1.2rem;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  padding-bottom: 0.5rem;
+}
+.oris-marquee-card {
+  flex: 0 0 26vw;
+  aspect-ratio: 440 / 477;
+  border-radius: 14px;
+  padding: 1.8vw;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 1rem;
+  scroll-snap-align: start;
+  color: #fff;
+  border: none;
+  text-align: left;
+  cursor: default;
+}
+.oris-marquee-card:nth-child(odd) {
+  background: var(--oris-primary);
+}
+.oris-marquee-card:nth-child(even) {
+  background: var(--oris-secondary);
+}
+.oris-marquee-card h3 {
+  position: relative;
+  color: #fff;
+  font-size: 1.9vw;
+  margin: 0;
+  white-space: pre-line;
+}
+.oris-marquee-card p {
+  position: relative;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 1.05rem;
+  margin: 0;
+  max-width: 96%;
+}
+
+/* Photo frame filling the upper half of each tall benefit card. flex:1 +
+   a min-height reserves the space before the image loads, so no layout
+   shift. If a photo fails, the tinted frame keeps the card intact. */
+.oris-marquee-visual {
+  position: relative;
+  flex: none;
+  aspect-ratio: 4 / 3;
+  width: 100%;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 10px;
+}
+.oris-marquee-visual img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.oris-marquee-visual::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent 55%, rgba(10, 27, 42, 0.28));
+}
+
+/* Auto-scrolling (infinite) variant of the marquee. The track holds two
+   copies of the cards and slides exactly one copy width, so the loop is
+   seamless. Spacing uses card margins instead of track gap to keep the
+   -50% loop point exact. Pauses on hover/focus; falls back to manual
+   scroll when reduced motion is requested. */
+.oris-marquee-auto {
+  overflow: hidden;
+  scroll-snap-type: none;
+}
+.oris-marquee-track {
+  display: flex;
+  width: max-content;
+  animation: oris-marquee-scroll 45s linear infinite;
+}
+.oris-marquee-track .oris-marquee-card {
+  margin-right: 1.2rem;
+}
+.oris-marquee-auto:hover .oris-marquee-track,
+.oris-marquee-auto:focus-within .oris-marquee-track {
+  animation-play-state: paused;
+}
+@keyframes oris-marquee-scroll {
+  to { transform: translateX(-50%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oris-marquee-auto { overflow-x: auto; }
+  .oris-marquee-track { animation: none; }
+}
+
+/* Redesigned hero: unified search bar, trust ticks and centered layout.
+   New classes only. */
+.landing-hero-title {
+  margin: 0;
+}
+.landing-search {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  max-width: 30rem;
+  padding: 0.35rem 0.35rem 0.35rem 1.1rem;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: var(--shadow-lg);
+}
+.landing-search-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  font: inherit;
+  font-size: 0.92rem;
+  color: var(--gray-800);
+  background: transparent;
+}
+.landing-search-input::placeholder {
+  color: var(--gray-400);
+}
+.landing-search:focus-within {
+  box-shadow:
+    0 12px 40px rgba(37, 99, 235, 0.16),
+    0 0 0 4px rgba(37, 99, 235, 0.15);
+}
+.landing-search-btn {
+  font: inherit;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+/* Sits beside the word "Search" inside the pill. Sized down from the 15px
+   icons in the header: the pill is short, and a full-size glyph would
+   unbalance a one-word label. `flex-shrink: 0` matches `.dot`, so the
+   button keeps its shape while the text wraps on a narrow viewport. */
+.landing-search-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+.landing-trust {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.1rem;
+  margin: 0;
+  padding: 0;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 0.86rem;
+}
+.landing-trust li {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.landing-trust li::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+  flex-shrink: 0;
+}
+/* Light hero: the same white surface as the sticky header, so the two read
+   as one continuous piece. Ink-navy type replaces white-on-gradient, which
+   removes the contrast problem entirely. */
+.landing-hero {
+  background:
+    radial-gradient(circle at 50% 15%, rgba(37, 99, 235, 0.05) 0%, rgba(255, 255, 255, 0) 65%),
+    #ffffff;
+}
+/* Dotted texture for the light hero. The base rule is written for the blue
+   gradient hero: white dots at 0.5 opacity, masked to only the lower 75%.
+   Reusing it here hid the dots twice over — 0.22 alpha x 0.35 opacity is a
+   ~7% blue tint on white, and the mask left the top quarter blank while the
+   densest area sat behind the white stat card. Draw the dots across the whole
+   hero instead, at a strength that reads on white, fading at both edges so
+   there is no seam against the sticky header above and the section below. */
+.landing-hero::before {
+  background-image: radial-gradient(rgba(51, 101, 226, 0.3) 1.5px, transparent 1.5px);
+  background-size: 22px 22px;
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 15%, #000 85%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 15%, #000 85%, transparent 100%);
+  opacity: 1;
+}
+.landing-hero-simple .oris-display {
+  color: #000;
+  text-shadow: none;
+}
+.landing-hero-simple .oris-lead {
+  color: var(--gray-600);
+  text-shadow: none;
+}
+.landing-hero-simple .landing-trust {
+  color: var(--gray-600);
+  text-shadow: none;
+}
+.landing-hero-simple .landing-trust li::before {
+  background: var(--oris-primary);
+}
+.landing-search {
+  border: 1px solid var(--gray-200);
+  box-shadow:
+    0 12px 40px rgba(37, 99, 235, 0.12),
+    var(--shadow-lg);
+}
+.landing-search:focus-within {
+  box-shadow:
+    0 12px 40px rgba(37, 99, 235, 0.16),
+    0 0 0 4px rgba(37, 99, 235, 0.15);
+}
+/* Solid brand-blue accent words. (A background-clip:text gradient was tried
+   here and removed: it breaks the split-text blur animation in Chromium,
+   leaving the accent words glitched or invisible.) */
+.landing-hero-simple .landing-hero-accent {
+  color: #000;
+}
+.landing-hero-stats h3 {
+  color: var(--brand-600);
+}
+.landing-pill-outline {
+  background: transparent;
+  color: var(--oris-secondary);
+  border-color: var(--gray-300);
+}
+.landing-pill-outline:hover {
+  background: var(--gray-50);
+  text-decoration: none;
+}
+.landing-hero-simple {
+  grid-template-columns: 1fr;
+  max-width: 920px;
+  margin: 0 auto;
+  justify-items: center;
+  text-align: center;
+  /* The base `.oris-hero-inner` reserves no top padding — fine for the
+     bottom-aligned two-column hero it was written for, but it glued this
+     single-column hero's heading to the sticky header. Give it air. */
+  padding-top: 4rem;
+}
+.landing-hero-simple .landing-search {
+  margin: 0 auto;
+  width: 100%;
+}
+.landing-hero-stats {
+  width: 100%;
+  max-width: 560px;
+}
+
+/* ==================================================================
+   Symptom checker (SymptomChecker only)
+   Oris palette: brand top accent, eyebrow label, ink heading and
+   calm grey panels. New classes only.
+   ================================================================== */
+
+.sym-checker {
+  overflow: hidden;
+  /* The accent the doctor-profile book card uses, so the two "act here"
+     cards in the app read as the same family. */
+  border-top: 3px solid var(--brand-600);
+}
+.sym-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 1.1rem 1.25rem 0.95rem;
+  border-bottom: 1px solid var(--gray-100);
+}
+.sym-head h3 {
+  margin: 0 0 0.2rem;
+  font-size: 1.1rem;
+}
+.sym-eyebrow {
+  margin-bottom: 0.3rem;
+  letter-spacing: 0.09em;
+  color: var(--brand-600);
+}
+.sym-textarea {
+  min-height: 110px;
+  border-radius: 12px;
+}
+.sym-foot {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.sym-age {
+  flex: 0 0 110px;
+  max-width: 110px;
+}
+/* Drops to its own full-width row when the column is too narrow for both
+   the age field and the label. */
+.sym-submit {
+  flex: 1 1 11rem;
+}
+.sym-urgency {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.9rem 1rem;
+  border-radius: 12px;
+  border: 1px solid;
+}
+.sym-urgency-danger {
+  background: var(--danger-bg);
+  border-color: #fecaca;
+}
+.sym-urgency-warning {
+  background: var(--warning-bg);
+  border-color: #fde68a;
+}
+.sym-urgency-success {
+  background: var(--success-bg);
+  border-color: #a7f3d0;
+}
+.sym-urgency-brand {
+  background: var(--brand-50);
+  border-color: var(--brand-100);
+}
+/* Pills sit on a tinted panel, so white keeps the tone readable. */
+.sym-urgency .badge {
+  background: rgba(255, 255, 255, 0.9);
+  text-transform: capitalize;
+}
+.sym-note {
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--gray-100);
+}
+.sym-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.9rem 1rem;
+  background: var(--gray-50);
+  border: 1px solid var(--gray-100);
+  border-radius: var(--radius);
+}
+.sym-block-title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gray-500);
+}
+.sym-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.sym-doctor {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.7rem 0.85rem;
+  background: #fff;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+}
+
+/* ==================================================================
+   Profile redesign (Profile only)
+   Identity cover, section rail, save bar.
+   New classes — no existing selector is modified above.
+   ================================================================== */
+
+.profile-layout {
+  max-width: 980px;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+.profile-cover {
+  position: relative;
+  overflow: hidden;
+}
+.profile-cover::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(600px 200px at 10% 0%, rgba(37, 99, 235, 0.1), transparent 65%),
+    radial-gradient(500px 180px at 95% 100%, rgba(19, 49, 74, 0.06), transparent 60%);
+}
+.profile-cover-inner {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  padding: 1.5rem 1.5rem 1.4rem;
+  flex-wrap: wrap;
+}
+.profile-avatar {
+  border: 3px solid #fff;
+  box-shadow: var(--shadow-lg);
+  flex-shrink: 0;
+}
+.profile-name {
+  margin: 0;
+  font-size: 1.5rem;
+  color: var(--gray-900);
+}
+.profile-complete-mini {
+  margin-left: auto;
+  text-align: center;
+  min-width: 76px;
+  padding: 0.6rem 0.8rem;
+  background: var(--brand-50);
+  border: 1px solid var(--brand-100);
+  border-radius: var(--radius);
+}
+.profile-complete-mini .stat-value {
+  color: var(--brand-700);
+}
+.profile-grid {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+.profile-grid > * {
+  min-width: 0;
+}
+.profile-savebar {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+  margin-top: 0.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--gray-100);
+}
+
+/* ==================================================================
+   Appointment cards (MyAppointments + dashboard compact rows)
+   Status accent rail, calendar tile, meta rows, action bar.
+   New classes — no existing selector is modified above.
+   ================================================================== */
+
+.appt-card {
+  position: relative;
+  overflow: hidden;
+}
+.appt-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--gray-200);
+}
+.appt-status-scheduled::before { background: var(--brand-600); }
+.appt-status-confirmed::before { background: var(--success); }
+.appt-status-in-progress::before { background: var(--info); }
+.appt-status-completed::before { background: var(--gray-300); }
+.appt-status-cancelled::before { background: var(--danger); }
+.appt-status-no-show::before { background: var(--warning); }
+
+.appt-top {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+}
+.appt-date {
+  flex-shrink: 0;
+  width: 62px;
+  padding: 0.55rem 0.25rem;
+  text-align: center;
+  background: var(--brand-50);
+  border: 1px solid var(--brand-100);
+  border-radius: 12px;
+}
+.appt-date-dow {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--brand-700);
+}
+.appt-date-day {
+  font-size: 1.35rem;
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--gray-900);
+  letter-spacing: -0.02em;
+}
+.appt-date-mon {
+  font-size: 0.72rem;
+  color: var(--gray-500);
+}
+.appt-main {
+  flex: 1;
+  min-width: 0;
+}
+.appt-doctor {
+  font-size: 1.02rem;
+}
+.appt-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 1.1rem;
+  margin-top: 0.5rem;
+  font-size: 0.86rem;
+  color: var(--gray-700);
+}
+.appt-meta > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.appt-reason {
+  margin-top: 0.55rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.82rem;
+  font-style: italic;
+  color: var(--gray-600);
+  background: var(--gray-50);
+  border-left: 3px solid var(--brand-200);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.appt-cancelled {
+  margin-top: 0.45rem;
+  font-size: 0.78rem;
+  color: var(--danger);
+}
+.appt-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.95rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--gray-100);
+}
+
+/* The patient wraps its actions in `.appt-btn-group`, which carried no layout
+   at all - it was only ever a hook for the wipe and the stagger. Its children
+   therefore inherited the 0.5rem gap of the *bar* around it, not one of their
+   own, and two inline-flex buttons with JSX-stripped whitespace sat flush
+   against each other: Reschedule and Cancel rendered as a single blob.
+
+   The doctor reuses the same class on a `.row.row-wrap` with its own tighter
+   0.35rem gap, inline so it still wins. Both call sites now get a real row out
+   of the one class whose name promises one. 0.5rem matches the bar's own gap,
+   so the group reads as part of the row rather than as something nested. */
+.appt-btn-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+@media (max-width: 600px) {
+  .appt-top {
+    gap: 0.8rem;
+  }
+  .appt-date {
+    width: 54px;
+  }
+  .appt-actions .btn {
+    flex: 1 1 auto;
+  }
+}
+
+/* ---------------- stage advance ----------------
+ *
+ * "Flow from the current stage to the next active state", made literal:
+ *
+ *   1. the rail is a pseudo-element whose colour comes from the parent's
+ *      `appt-status-*` class, so transitioning `background-color` turns what
+ *      would be a jump cut into visible travel between two stages;
+ *   2. `.appt-advance` is present only for ~950ms after a real change (see
+ *      AdvancingCard), so everything below is driven by a transition the user
+ *      made rather than by page load. On first paint there is no previous
+ *      stage, so nothing fires and the list does not flash on arrival;
+ *   3. the buttons that are no longer valid leave the DOM and the new ones
+ *      arrive, so they are re-introduced as one staggered motion rather than
+ *      appearing already in place.
+ *
+ * The rail pulses white rather than a brand tint on purpose: the rail's colour
+ * differs per stage (blue / green / cyan / grey / red / amber) and a blue glow
+ * would clash on the green, grey and red stages.
+ */
+.appt-card::before {
+  transition: background-color 0.55s var(--lg-ease);
+}
+.appt-advance.appt-card::before {
+  animation: apptRailPulse 0.85s var(--lg-ease);
+}
+@keyframes apptRailPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+  }
+  30% {
+    box-shadow: 0 0 14px 2px rgba(255, 255, 255, 0.9);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+  }
+}
+/* The status badge deliberately does NOT animate. It is the one element on the
+   card whose job is to be read at a glance, and a scaling badge moves the text
+   under the eye at the exact moment the status is being reported. The rail and
+   the buttons carry the advance instead: they sit at the edge of the card and in
+   the action bar, so the motion is peripheral and the label stays still. */
+/* `backwards` holds each button invisible until its own delay starts, otherwise
+   a staggered bar flashes in place first and then jumps.
+
+   Scoped to `.appt-btn-group` on both pages rather than to the two bar classes:
+   the patient's three actions now live in their own group inside `.appt-actions`,
+   and staggering the group itself would stagger one wrapper instead of three
+   buttons. */
+.appt-advance .appt-btn-group > * {
+  animation: apptActionFlow 0.36s var(--lg-ease) backwards;
+}
+.appt-advance .appt-btn-group > *:nth-child(1) {
+  animation-delay: 0.02s;
+}
+.appt-advance .appt-btn-group > *:nth-child(2) {
+  animation-delay: 0.08s;
+}
+.appt-advance .appt-btn-group > *:nth-child(3) {
+  animation-delay: 0.14s;
+}
+.appt-advance .appt-btn-group > *:nth-child(4) {
+  animation-delay: 0.2s;
+}
+.appt-advance .appt-btn-group > *:nth-child(n + 5) {
+  animation-delay: 0.26s;
+}
+/* The doctor's bar is the same element `.row.row-wrap` already lays out. The
+   three block rules below belong to `.appt-actions`, cancelled here so the
+   group can be reused there without a divider appearing under the buttons. */
+.appt-btn-group.appt-actions-inline {
+  justify-content: flex-end;
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+@keyframes apptActionFlow {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* Same information, no motion. `!important` so these hold regardless of where
+   the block above sits relative to the other reduced-motion rules in the file. */
+@media (prefers-reduced-motion: reduce) {
+  .appt-card::before {
+    transition: none !important;
+  }
+  .appt-advance.appt-card::before,
+  .appt-advance .appt-btn-group > * {
+    animation: none !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .profile-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .profile-complete-mini {
+    margin-left: 0;
+  }
+}
+
+/* ==================================================================
+   Doctor profile redesign (DoctorProfile only)
+   Clean white cards, soft blue cover glow, sticky booking summary.
+   New classes — no existing selector is modified above.
+   ================================================================== */
+
+.doc-profile-page {
+  background:
+    radial-gradient(1000px 380px at 50% 0%, rgba(37, 99, 235, 0.06) 0%, rgba(255, 255, 255, 0) 65%),
+    #ffffff;
+}
+.doc-profile-cover {
+  position: relative;
+  overflow: hidden;
+  padding: 1.75rem;
+}
+.doc-profile-cover::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(560px 220px at 12% 0%, rgba(37, 99, 235, 0.1), transparent 65%),
+    radial-gradient(480px 200px at 90% 100%, rgba(124, 58, 237, 0.06), transparent 60%);
+}
+.doc-profile-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+.doc-profile-photo {
+  border: 3px solid #fff;
+  box-shadow: var(--shadow-lg);
+  flex-shrink: 0;
+}
+.doc-profile-info {
+  flex: 1;
+  min-width: 240px;
+}
+.doc-profile-name {
+  margin: 0.5rem 0 0.75rem;
+  font-size: 1.75rem;
+  color: var(--oris-secondary);
+}
+.doc-profile-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+.doc-profile-fact {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.32rem 0.8rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--gray-700);
+  background: var(--gray-50);
+  border: 1px solid var(--gray-200);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.doc-profile-cta {
+  margin-left: auto;
+  text-align: right;
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  align-items: flex-end;
+}
+.doc-profile-fee {
+  font-size: 1.9rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--brand-600);
+  line-height: 1.1;
+}
+.doc-profile-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+.doc-profile-detail {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.8rem 0.95rem;
+  background: var(--gray-50);
+  border: 1px solid var(--gray-100);
+  border-radius: var(--radius);
+}
+.doc-profile-location {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+.doc-profile-day {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.9rem 1rem;
+  background: var(--gray-50);
+  border: 1px solid var(--gray-100);
+  border-radius: var(--radius);
+}
+.doc-profile-bookcard {
+  border-top: 3px solid var(--brand-600);
+}
+.doc-profile-bookcard-eyebrow {
+  letter-spacing: 0.08em;
+  color: var(--brand-600);
+}
+
+@media (max-width: 900px) {
+  .doc-profile-cover {
+    padding: 1.25rem;
+  }
+  .doc-profile-name {
+    font-size: 1.4rem;
+  }
+  .doc-profile-cta {
+    margin-left: 0;
+    text-align: left;
+    align-items: stretch;
+    width: 100%;
+  }
+  .doc-profile-details {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Circular arrow button from the reference section nav. */
+.oris-round-btn {
+  width: 3.4rem;
+  height: 3.4rem;
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: 999px;
+  border: 1px solid rgba(19, 49, 74, 0.2);
+  background: #fff;
+  color: var(--oris-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.3s ease, color 0.3s ease;
+}
+.oris-round-btn:hover {
+  background: var(--oris-primary);
+  color: #fff;
+}
+
+@media (max-width: 1025px) {
+  .oris-hero-inner {
+    grid-template-columns: 1fr;
+    padding: 3rem 1.25rem 3rem;
+    gap: 2rem;
+  }
+  .oris-display {
+    font-size: 2.6rem;
+    max-width: none;
+  }
+  .oris-lead,
+  .oris-stat-card p {
+    font-size: 0.95rem;
+  }
+  .oris-stat-card h3 {
+    font-size: 1.6rem;
+  }
+  .oris-figure {
+    font-size: 2.2rem;
+  }
+  .oris-marquee-card {
+    flex: 0 0 76vw;
+  }
+  .oris-marquee-card h3 {
+    font-size: 1.4rem;
+  }
+}
+
+/* ------------------------------------------------------------------
+   App-shell primitives (signed-in pages), using the same tokens.
+   ------------------------------------------------------------------ */
+
+.shell-grid {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 1.5rem;
+  align-items: start;
+}
+.shell-grid.profile-grid {
+  grid-template-columns: 250px 1fr;
+}
+.shell-side {
+  position: sticky;
+  top: calc(var(--header-h) + 1rem);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.9rem;
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(31, 38, 135, 0.08);
+}
+.shell-side a,
+.shell-side span,
+.shell-side button {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.6rem 0.85rem;
+  border-radius: 999px;
+  font-size: 0.92rem;
+  font-family: inherit;
+  color: var(--gray-600);
+  text-decoration: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+.shell-side a:hover,
+.shell-side button:hover {
+  background: var(--gray-50);
+  text-decoration: none;
+}
+.shell-side .active {
+  background: var(--brand-600);
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.4);
+}
+
+/* Padded glass panel for page headers */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(31, 38, 135, 0.08);
+  padding: 1.25rem 1.5rem;
+}
+
+.oris-chip {
+  display: inline-block;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.78rem;
+  background: rgba(51, 101, 226, 0.1);
+  color: var(--oris-primary);
+  border-radius: 999px;
+}
+
+/* Specialty chips on the landing page and the doctor profile. */
+.mock-pills {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.mock-pill {
+  padding: 0.4rem 0.95rem;
+  font-size: 0.9rem;
+  background: #fff;
+  border: 1px solid var(--gray-200);
+  border-radius: 999px;
+  color: var(--gray-700);
+  text-decoration: none;
+}
+.mock-pill:hover {
+  border-color: var(--oris-primary);
+  color: var(--oris-primary);
+  text-decoration: none;
+}
+
+.oris-stat {
+  padding: 1.25rem 1.4rem;
+}
+.oris-stat .num {
+  font-size: 2.6vw;
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: var(--oris-secondary);
+}
+
+.doc-row {
+  display: flex;
+  gap: 1.25rem;
+  align-items: flex-start;
+  padding: 1.4rem;
+}
+.doc-row .fee {
+  text-align: right;
+  white-space: nowrap;
+}
+/* Phones: let the card wrap so the fee block drops to its own full-width
+   row instead of crushing the doctor details into a sliver. */
+@media (max-width: 600px) {
+  .doc-row {
+    flex-wrap: wrap;
+    padding: 1.1rem;
+    gap: 1rem;
+  }
+  .doc-row .fee {
+    width: 100%;
+    text-align: left;
+    white-space: normal;
+  }
+}
+
+.auth-wrap {
+  max-width: 420px;
+  margin: 0 auto;
+  padding: 3rem 0 4rem;
+}
+.auth-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  margin-bottom: 1.25rem;
+}
+.auth-brand .mark {
+  width: 34px;
+  height: 34px;
+  display: block;
+  filter: drop-shadow(0 3px 7px rgba(29, 78, 216, 0.28));
+}
+
+@media (max-width: 1025px) {
+  .shell-grid {
+    grid-template-columns: 1fr;
+  }
+  .shell-side {
+    position: static;
+  }
+  .oris-stat .num {
+    font-size: 1.9rem;
+  }
+}
+
+/* ==================================================================
+   Glassmorphism effects
+   Frosted glass cards, blur, subtle borders, gradient accents
+   ================================================================== */
+
+.glass {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: 0 8px 32px rgba(31, 38, 135, 0.15);
+}
+
+.glass-dark {
+  background: rgba(19, 49, 74, 0.65);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25);
+  color: #fff;
+}
+
+.glass-header {
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(31, 38, 135, 0.1);
+}
+
+/* Gradient accents for cards */
+.glass-accent-primary::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(135deg, rgba(51, 101, 226, 0.25), rgba(37, 99, 235, 0.05));
+  z-index: -1;
+}
+
+/* Glass buttons */
+.btn-glass {
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  color: var(--gray-800);
+}
+.btn-glass:hover {
+  background: rgba(255, 255, 255, 0.8);
+  border-color: rgba(31, 38, 135, 0.4);
+}
+
+/* The canvas the glass samples: one soft blue light top-left, one cool
+   shade bottom-right, over the pale brand wash. Kept in the app's own
+   hues — the glass itself never adds color. */
+.page-glass-bg {
+  background:
+    radial-gradient(1100px 620px at 10% -8%, rgba(51, 101, 226, 0.1), transparent 55%),
+    radial-gradient(900px 520px at 94% 108%, rgba(19, 49, 74, 0.055), transparent 55%),
+    #eaf2ff;
+}
+
+/* ---------------- hamburger drawer ---------------- */
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.35);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  z-index: 150;
+  animation: fadeIn 0.18s ease;
+}
+.drawer-panel {
+  position: absolute;
+  top: calc(var(--header-h) + 10px);
+  right: 12px;
+  width: min(320px, calc(100vw - 24px));
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 18px;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.22);
+  padding: 1rem;
+  z-index: 151;
+  animation: drawerIn 0.22s cubic-bezier(0.2, 0.7, 0.2, 1);
+  transform-origin: top right;
+}
+@keyframes drawerIn {
+  from { opacity: 0; transform: translateY(-10px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-bottom: 0.35rem;
+}
+.drawer-role {
+  display: inline-block;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--brand-700);
+  background: var(--brand-50);
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  margin-bottom: 0.6rem;
+}
+.drawer-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.drawer-link {
+  display: flex;
+  align-items: center;
+  padding: 0.6rem 0.85rem;
+  border-radius: 12px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--gray-700);
+  text-decoration: none;
+  transition: background 0.15s ease, transform 0.15s ease;
+  animation: drawerItemIn 0.3s ease both;
+}
+@keyframes drawerItemIn {
+  from { opacity: 0; transform: translateX(10px); }
+  to { opacity: 1; transform: none; }
+}
+.drawer-link:hover {
+  background: rgba(37, 99, 235, 0.08);
+  text-decoration: none;
+}
+.drawer-link.active {
+  background: rgba(255, 255, 255, 0.65);
+  backdrop-filter: blur(10px) saturate(1.3);
+  -webkit-backdrop-filter: blur(10px) saturate(1.3);
+  border: 1px solid var(--gray-200);
+  color: var(--gray-800);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 4px 14px rgba(15, 23, 42, 0.08);
+}
+
+/* Liquid-glass active state for the header nav pills: colorless frosted
+   glass — backdrop blur, inner top highlight and a soft neutral shadow. */
+.nav-glass-active {
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(12px) saturate(1.4);
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 4px 16px rgba(15, 23, 42, 0.1);
+  color: var(--gray-800);
+}
+.nav-glass-active:hover {
+  background: rgba(255, 255, 255, 0.75);
+}
+
+/* Stat card glass variant */
+.glass-stat {  background: rgba(255, 255, 255, 0.65);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 16px;
+  box-shadow: 0 8px 24px rgba(31, 38, 135, 0.1);
+  padding: 1rem 1.1rem;
+  min-width: 0;
+  overflow: hidden;
+}
+.glass-stat .num {
+  color: var(--brand-600);
+  font-size: 1.7rem;
+  font-weight: 800;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+.glass-stat .stat-label {
+  color: var(--gray-600);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.glass-stat .stat-sub {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Card glass variant */
+.glass-card {
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(31, 38, 135, 0.08);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drawer-panel, .drawer-link, .drawer-backdrop { animation: none !important; }
+  .rb-aurora-orb, .rb-shiny, .ai-card::before, .f-cube, .f-ring, .f-plus, .f-dot { animation: none !important; }
+  .rb-split-part { opacity: 1 !important; transform: none !important; filter: none !important; }
+  .chat-float-btn { animation: none !important; }
+  .chat-typing span { animation: none !important; }
+}
+
+/* ==================================================================
+   First-load prototype notice
+   ================================================================== */
+
+/* Out-ranks the chat control (600) and the menu sheet (650/651): a layer over
+   the page has to cover the layers that are already over the page, or the
+   assistant floats on top of the thing telling you not to trust it. */
+.notice-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 700;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  background: rgba(15, 23, 42, 0.45);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  overflow-y: auto;
+  animation: noticeFade 0.2s ease;
+}
+.notice-card {
+  width: min(440px, 100%);
+  padding: 1.6rem 1.5rem 1.25rem;
+  border-radius: 20px;
+  background: var(--lg-fill-strong);
+  border: 1px solid var(--lg-edge);
+  box-shadow: var(--lg-spec-strong), 0 30px 70px -20px rgba(15, 23, 42, 0.45);
+  text-align: center;
+  animation: noticePop 0.24s var(--lg-ease);
+}
+.notice-icon {
+  font-size: 1.9rem;
+  line-height: 1;
+  margin-bottom: 0.6rem;
+}
+.notice-title {
+  margin: 0 0 0.5rem;
+  font-size: 1.3rem;
+  line-height: 1.25;
+  color: #991b1b;
+}
+.notice-body {
+  margin: 0 0 1.25rem;
+  color: var(--gray-700);
+  font-size: 0.92rem;
+  line-height: 1.6;
+}
+
+@keyframes noticeFade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes noticePop {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notice-backdrop,
+  .notice-card {
+    animation: none;
+  }
+}
+
+/* ==================================================================
+   Floating chatbot widget
+   ================================================================== */
+
+.chat-float-btn {
+  position: fixed;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  z-index: 600;
+  width: 3.2rem;
+  height: 3.2rem;
+  min-width: 3.2rem;
+  min-height: 3.2rem;
+  border-radius: 999px;
+  border: 1px solid var(--gray-200);
+  background: #fff;
+  color: var(--gray-800);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.16);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.chat-float-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 38px rgba(15, 23, 42, 0.2);
+}
+.chat-float-icon {
+  font-size: 1.35rem;
+}
+.chat-float-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--brand-600);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  display: grid; place-items: center;
+  border: 2px solid #fff;
+}
+
+/* Popup
+   The panel is a MODAL: its backdrop is meant to stop the page being usable
+   behind it. It therefore has to out-rank the undo bar (620), or an undo bar
+   that happens to still be on screen would float above this scrim and stay
+   tappable through it. */
+.chat-popup-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 640;
+  background: rgba(15, 23, 42, 0.35);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+/* The panel deliberately carries no `position` and no `z-index` of its own.
+   It is a flex child of the backdrop, which centres it with `align-items` and
+   `justify-content`; making it `fixed` here would drop it out of that flex
+   layout and break the centring. It needs no z-index either, because it is
+   painted inside the backdrop's own stacking context, so it already sits
+   above everything the backdrop covers. */
+.chat-popup {
+  width: 100%; max-width: 440px; height: 90vh; max-height: 700px;
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.25);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  animation: popupIn 0.22s ease-out;
+}
+@keyframes popupIn {
+  from { opacity: 0; transform: translateY(18px); }
+  to { opacity: 1; transform: none; }
+}
+
+.chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--gray-200);
+  background: #fff;
+}
+.chat-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.chat-avatar {
+  width: 34px; height: 34px; border-radius: 10px;
+  background: linear-gradient(135deg, var(--brand-600), var(--brand-900));
+  color: #fff; display: grid; place-items: center; font-size: 1.25rem;
+}
+.chat-title { font-size: 1.05rem; font-weight: 700; color: var(--gray-900); margin: 0; }
+.chat-subtitle { font-size: 0.8rem; color: var(--gray-500); margin: 0; }
+
+.chat-window {
+  display: flex;
+  flex-direction: column;
+  height: 56vh;
+  min-height: 300px;
+  overflow-y: auto;
+  padding: 1.25rem;
+  gap: 0.9rem;
+  background: #fbfdff;
+}
+.chat-msg { display: flex; margin: 0 0 0.4rem; }
+.chat-msg-user { justify-content: flex-end; }
+.chat-msg-assistant { justify-content: flex-start; }
+.chat-bubble {
+  max-width: 80%;
+  padding: 0.65rem 0.9rem;
+  border-radius: 12px;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+.chat-bubble-user {
+  background: var(--brand-600); color: #fff;
+  border-bottom-right-radius: 2px;
+}
+.chat-bubble-assistant {
+  background: #fff; color: var(--gray-800);
+  border: 1px solid var(--gray-200);
+  border-bottom-left-radius: 2px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.chat-meta { display: flex; gap: 0.4rem; margin-bottom: 0.4rem; flex-wrap: wrap; }
+.chat-text { margin: 0; white-space: pre-wrap; }
+.chat-typing {
+  display: flex; align-items: center; gap: 0.35rem;
+  padding: 0.65rem 0.9rem;
+}
+.chat-typing span {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--gray-500);
+  animation: bounce 1.4s infinite ease-in-out both;
+}
+.chat-typing span:nth-child(1) { animation-delay: -0.32s; }
+.chat-typing span:nth-child(2) { animation-delay: -0.16s; }
+.chat-typing-text { margin-left: 0.5rem; font-size: 0.85rem; color: var(--gray-600); }
+@keyframes bounce { 0%,80%,100% { transform: scale(0.9); } 40% { transform: scale(1); } }
+
+.chat-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  height: 100%; color: var(--gray-500); text-align: center;
+}
+.chat-empty-icon { font-size: 2.5rem; margin-bottom: 0.6rem; opacity: 0.6; }
+.chat-empty-title { font-size: 1.1rem; font-weight: 700; color: var(--gray-900); margin: 0; }
+.chat-empty-desc { font-size: 0.9rem; margin: 0.25rem 0 1rem; max-width: 30ch; }
+.chat-empty-chips { display: flex; gap: 0.4rem; flex-wrap: wrap; justify-content: center; }
+.chat-chip {
+  padding: 0.35rem 0.85rem; font-size: 0.85rem; background: #fff;
+  border: 1px solid var(--gray-200); border-radius: 999px; color: var(--gray-700);
+  cursor: pointer;
+}
+.chat-chip:hover { background: var(--gray-50); text-decoration: none; border-color: var(--brand-600); color: var(--brand-600); }
+.chat-chip:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.chat-input-area {
+  border-top: 1px solid var(--gray-200);
+  padding: 0.85rem 1.25rem;
+  background: #fff;
+}
+.chat-form {
+  display: flex; gap: 0.5rem; align-items: flex-end;
+}
+.chat-form .input { flex: 1; min-width: 0; }
+
+/* ==================================================================
+   Chatbot assistant (Help page)
+   Bubble transcript, pinned input, typing indicator
+   ================================================================== */
+
+.chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--gray-200);
+  background: #fff;
+}
+.chat-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.chat-avatar {
+  width: 34px; height: 34px; border-radius: 10px;
+  background: linear-gradient(135deg, var(--brand-600), var(--brand-900));
+  color: #fff; display: grid; place-items: center; font-size: 1.25rem;
+}
+.chat-title { font-size: 1.05rem; font-weight: 700; color: var(--gray-900); margin: 0; }
+.chat-subtitle { font-size: 0.8rem; color: var(--gray-500); margin: 0; }
+
+.chat-window {
+  display: flex;
+  flex-direction: column;
+  height: 56vh;
+  min-height: 300px;
+  overflow-y: auto;
+  padding: 1.25rem;
+  gap: 0.9rem;
+  background: #fbfdff;
+}
+.chat-msg { display: flex; margin: 0 0 0.4rem; }
+.chat-msg-user { justify-content: flex-end; }
+.chat-msg-assistant { justify-content: flex-start; }
+.chat-bubble {
+  max-width: 80%;
+  padding: 0.65rem 0.9rem;
+  border-radius: 12px;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+.chat-bubble-user {
+  background: var(--brand-600); color: #fff;
+  border-bottom-right-radius: 2px;
+}
+.chat-bubble-assistant {
+  background: #fff; color: var(--gray-800);
+  border: 1px solid var(--gray-200);
+  border-bottom-left-radius: 2px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.chat-meta { display: flex; gap: 0.4rem; margin-bottom: 0.4rem; flex-wrap: wrap; }
+.chat-text { margin: 0; white-space: pre-wrap; }
+.chat-typing {
+  display: flex; align-items: center; gap: 0.35rem;
+  padding: 0.65rem 0.9rem;
+}
+.chat-typing span {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--gray-500);
+  animation: bounce 1.4s infinite ease-in-out both;
+}
+.chat-typing span:nth-child(1) { animation-delay: -0.32s; }
+.chat-typing span:nth-child(2) { animation-delay: -0.16s; }
+.chat-typing-text { margin-left: 0.5rem; font-size: 0.85rem; color: var(--gray-600); }
+@keyframes bounce { 0%,80%,100% { transform: scale(0.9); } 40% { transform: scale(1); } }
+
+.chat-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  height: 100%; color: var(--gray-500); text-align: center;
+}
+.chat-empty-icon { font-size: 2.5rem; margin-bottom: 0.6rem; opacity: 0.6; }
+.chat-empty-title { font-size: 1.1rem; font-weight: 700; color: var(--gray-900); margin: 0; }
+.chat-empty-desc { font-size: 0.9rem; margin: 0.25rem 0 1rem; max-width: 30ch; }
+.chat-empty-chips { display: flex; gap: 0.4rem; flex-wrap: wrap; justify-content: center; }
+.chat-chip {
+  padding: 0.35rem 0.85rem; font-size: 0.85rem; background: #fff;
+  border: 1px solid var(--gray-200); border-radius: 999px; color: var(--gray-700);
+  cursor: pointer;
+}
+.chat-chip:hover { background: var(--gray-50); text-decoration: none; border-color: var(--brand-600); color: var(--brand-600); }
+.chat-chip:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.chat-input-area {
+  border-top: 1px solid var(--gray-200);
+  padding: 0.85rem 1.25rem;
+  background: #fff;
+}
+.chat-form {
+  display: flex; gap: 0.5rem; align-items: flex-end;
+}
+.chat-form .input { flex: 1; min-width: 0; }
+/* ==================================================================
+   Landing page additions (PublicHome only)
+   New classes - no existing selector is modified above.
+   ================================================================== */
+.oris-pill-white { background: #fff; color: var(--oris-primary); border-color: rgba(255,255,255,0.9); }
+.oris-pill-white:hover { background: var(--brand-50); }
+.oris-pill-white .dot { background: var(--oris-primary); }
+.oris-pill-outline { background: transparent; color: #fff; border-color: rgba(255,255,255,0.65); }
+.oris-pill-outline:hover { background: rgba(255,255,255,0.16); }
+.landing-section { min-height: 0; }
+.landing-steps { list-style: none; margin: 0; padding: 0; }
+.landing-step-num { width: 2rem; height: 2rem; border-radius: 999px; display: inline-grid; place-items: center; font-weight: 600; font-size: 0.95rem; color: #fff; background: var(--oris-primary); }
+/* Alternating tint: every other landing section picks up the same grey
+   surface "Why choose BookMyDoc" already used. `.landing-alt` marks the tinted
+   sections; `.landing-why` keeps its own rule so that section stays grey no
+   matter where it lands in the order. */
+.landing-why,
+.landing-alt { background: var(--gray-50); }
+.landing-why-icon { width: 2.5rem; height: 2.5rem; border-radius: 12px; display: inline-grid; place-items: center; font-size: 1.25rem; background: var(--brand-50); border: 1px solid var(--brand-100); }
+.landing-cta { background: var(--oris-primary); color: #fff; border-radius: 2vw; padding: 3vw; display: grid; grid-template-columns: 1.4fr 1fr; gap: 2rem; align-items: center; box-shadow: var(--shadow-lg); }
+.landing-cta h2 { color: #fff; font-size: 2.2rem; margin: 0.9rem 0 0.6rem; }
+.landing-cta p { color: rgba(255,255,255,0.88); margin: 0; max-width: 46ch; }
+.landing-cta-eyebrow { color: #fff; }
+.landing-cta-eyebrow .dot { background: #fff; }
+.landing-cta-actions { display: flex; flex-direction: column; gap: 0.7rem; align-items: stretch; }
+.landing-cta-actions .small { color: rgba(255,255,255,0.88); text-align: center; }
+.landing-cta-primary { background: #fff; color: var(--oris-primary); border-color: transparent; }
+.landing-cta-primary:hover { background: var(--brand-50); text-decoration: none; }
+.landing-cta-secondary { background: transparent; color: #fff; border-color: rgba(255,255,255,0.65); }
+.landing-cta-secondary:hover { background: rgba(255,255,255,0.14); text-decoration: none; }
+.landing-cta-link { color: #fff; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+@media (max-width: 900px) { .landing-cta { grid-template-columns: 1fr; border-radius: 20px; padding: 1.75rem 1.4rem; } .landing-cta h2 { font-size: 1.6rem; } }
+
+/* ==================================================================
+   Liquid Glass — one neutral material for the interface layer
+   ------------------------------------------------------------------
+   The material: a frosted surface that samples the canvas behind it,
+   a bright specular edge where the light lands, a hairline rim and a
+   soft ink shadow. Every page-level surface uses the same recipe —
+   toolbar, cards, panels, stat tiles, sheets, overlays — so the app
+   reads as a single sheet of glass instead of six different filters.
+
+   House rules:
+   • The glass carries no color of its own. The pale canvas wash is
+     what tints it, and every hue on screen belongs to content or to
+     the brand — never to the material.
+   • No glass inside glass. Elements nested in a card keep flat,
+     translucent fills; only the outermost layer gets the blur.
+   • Everything degrades: opaque fills when backdrop-filter is not
+     supported, and no translucency at all when the user asks for
+     reduced transparency or more contrast (blocks at the bottom).
+   ================================================================== */
+
+/* ---------------- toolbar + footer ---------------- */
+
+.app-header {
+  height: var(--header-h);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(255, 255, 255, 0.52);
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+  border-bottom: 1px solid var(--lg-hairline);
+  box-shadow: 0 12px 32px -28px rgba(15, 23, 42, 0.4);
+}
+
+.app-footer {
+  /* No hairline. The tint change is already the boundary, and a hard rule
+     across the full width just adds a line to look to. */
+  background: var(--gray-50);
+  /* Trimmed from 1.5rem. The notice below is centred and now wraps to three
+     lines rather than four, so the band under a short centred string was the
+     part that actually read as empty.
+
+     Bottom padding is set on its own and kept small: the colophon is the last
+     thing in the footer, so whatever sits under it is dead space by
+     definition. 0.6rem is enough to stop the copyright looking welded to the
+     bottom edge of the window. */
+  padding: 1.05rem 0 0.6rem;
+  margin-top: auto;
+}
+
+/* The prototype notice is the footer's reason for existing on a build that
+   cannot book anything, so it is set as type rather than as another line of
+   `.muted` caption — but as *type*, not as a panel.
+
+   It was a red-tinted bordered box, which is an alert, and an alert at the
+   bottom of every page trains the eye to stop reading it: the thing that has
+   to be always true starts looking like an error that just happened. It was
+   also duplicating the popup, which is where the urgency already lives. Here
+   it only has to be permanently true, so it is set the way a colophon is set
+   - centred, narrow measure, a firm lead and quiet ink after it. */
+.app-footer-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+}
+.app-footer-notice {
+  margin: 0;
+  /* A measure, not a width. Without one the line runs the full 1200px of a
+     desktop viewport and the eye gives up long before the end of it.
+
+     Widened from 62ch to 78ch, which is the sideways squeeze that actually
+     saves height: a wider measure wraps the same ~200 characters into three
+     lines instead of four. 78ch is still inside a comfortable reading measure
+     for a single centred paragraph, so the text stays readable while the footer
+     gives up roughly a line of height. The font-size is deliberately NOT reduced
+     further - 0.8rem is already small for a paragraph this long, and shrinking
+     type to save space costs every reader to flatter the one who scrolled down. */
+  max-width: 78ch;
+  color: var(--gray-600);
+  font-size: 0.8rem;
+  /* 1.45 rather than 1.6. Three lines at 1.45 set the same height as two lines
+     did at 1.6, which is where most of the saving came from. */
+  line-height: 1.45;
+  text-align: center;
+  /* Keeps the lead from being the last word on its line. */
+  text-wrap: pretty;
+}
+.app-footer-notice strong {
+  /* Weight and ink, not colour. The claim still has to be the first thing
+     your eye lands on; it just does not have to be red to get there. */
+  color: var(--gray-900);
+}
+.app-footer-copy {
+  margin: 0;
+  color: var(--gray-400);
+  text-align: center;
+}
+
+/* Clearance for the floating assistant.
+   `.chat-float-btn` is `position: fixed` at `right/bottom: 1.25rem` and 3.2rem
+   square, so its top edge sits ~71px up the viewport. When the footer was laid
+   out full-width this reserved a 5.25rem band under it, because the copyright
+   really did land under the button.
+
+   It does not any more, and the reserve is now a margin of comfort rather than
+   the thing preventing a collision. Measured at max scroll, the horizontal gap
+   between the button and the colophon is 520px at 1280 and still 75px at 390,
+   40px at 320 - unchanged at every padding value tried, because the colophon is
+   centred and short while the button is hard right. That separation, not this
+   padding, is what keeps them apart.
+
+   Kept, but at 1rem rather than deleted, so a page with the widget does not
+   sit visibly tighter than the doctor and admin shells, which never mount it.
+   The 6px difference is below the threshold anyone would notice, and it is
+   smaller than the reserve used to be because the reserve was never what kept
+   the two apart. */
+.has-chat-widget .app-footer {
+  padding-bottom: 1rem;
+}
+
+/* ---------------- the material ---------------- */
+
+.card,
+.glass,
+.glass-panel,
+.glass-card,
+.glass-stat,
+.shell-side {
+  background: var(--lg-fill);
+  -webkit-backdrop-filter: blur(var(--lg-blur));
+  backdrop-filter: blur(var(--lg-blur));
+  border: 1px solid var(--lg-edge);
+  border-radius: 20px;
+  box-shadow: var(--lg-spec), var(--lg-shadow);
+}
+
+.card-head {
+  border-bottom: 1px solid var(--lg-hairline);
+}
+.card-foot {
+  border-top: 1px solid var(--lg-hairline);
+  background: rgba(255, 255, 255, 0.34);
+  border-radius: 0 0 19px 19px;
+}
+.card-hover:hover {
+  box-shadow: var(--lg-spec), var(--lg-shadow-float);
+  transform: translateY(-2px);
+}
+
+/* No glass inside glass: a card nested in another card (queue rows,
+   list items) is an inset tile — flat fill, tighter radius, no blur. */
+.card .card,
+.card .glass-card,
+.drawer-panel .card {
+  background: rgba(255, 255, 255, 0.45);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border-color: rgba(255, 255, 255, 0.55);
+  border-radius: 16px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+/* A card inside a MODAL is in the opposite situation from one inside a card.
+   The modal is near-opaque white, so the 0.45 white above would composite to
+   almost exactly the panel colour and the tile would lose its edge — and a
+   white border on near-white is invisible. The same rule the drawer thumb
+   follows: separating from a light surface means going darker, not lighter. */
+.modal .card {
+  background: rgba(15, 23, 42, 0.03);
+  border-color: var(--lg-hairline);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+/* ---------------- controls ---------------- */
+
+.btn {
+  border-radius: 12px;
+  transition:
+    background 0.18s var(--lg-ease),
+    box-shadow 0.18s var(--lg-ease),
+    opacity 0.15s ease,
+    transform 0.18s var(--lg-ease);
+}
+.btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.btn-primary {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.24),
+    0 1px 2px rgba(15, 23, 42, 0.08),
+    0 10px 24px -14px rgba(37, 99, 235, 0.6);
+}
+.btn-primary:hover:not(:disabled) {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    0 1px 2px rgba(15, 23, 42, 0.1),
+    0 12px 28px -14px rgba(29, 78, 216, 0.65);
+}
+
+.btn-secondary,
+.btn-glass {
+  background: rgba(255, 255, 255, 0.6);
+  border-color: var(--lg-edge);
+  color: var(--gray-700);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--lg-spec), 0 1px 2px rgba(15, 23, 42, 0.05);
+}
+.btn-secondary:hover:not(:disabled),
+.btn-glass:hover {
+  background: rgba(255, 255, 255, 0.88);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: rgba(15, 23, 42, 0.05);
+}
+
+/* ---------------- forms ---------------- */
+
+.input,
+.select,
+.textarea {
+  background-color: rgba(255, 255, 255, 0.52);
+  border-color: rgba(15, 23, 42, 0.09);
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.input:focus,
+.select:focus,
+.textarea:focus {
+  background-color: rgba(255, 255, 255, 0.8);
+  border-color: var(--brand-500);
+  box-shadow:
+    inset 0 1px 2px rgba(15, 23, 42, 0.02),
+    0 0 0 3.5px rgba(37, 99, 235, 0.16);
+}
+
+/* ---------------- tabs → segmented glass ---------------- */
+
+.tabs {
+  display: flex;
+  gap: 0.2rem;
+  padding: 0.22rem;
+  width: fit-content;
+  max-width: 100%;
+  overflow-x: auto;
+  background: rgba(255, 255, 255, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 999px;
+  box-shadow: inset 0 1px 3px rgba(15, 23, 42, 0.05);
+  scrollbar-width: none;
+}
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+.tab {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 999px;
+  color: var(--gray-600);
+  background: transparent;
+  transition:
+    color 0.18s var(--lg-ease),
+    background 0.18s var(--lg-ease),
+    box-shadow 0.18s var(--lg-ease);
+}
+.tab:hover {
+  color: var(--gray-800);
+}
+/* The active tab is the selected segment, but it has to survive a pale-blue
+   page. `#eaf2ff` is the same family as brand-50/100, so a tinted thumb sat
+   two near-identical blues apart from the background and the thumb vanished
+   into it. Nothing pale can separate from a pale ground, so the active state
+   takes the strongest fill in the palette: solid brand-600 under white text
+   (about 5.5:1, passing AA), ringed in brand-700 so the edge is explicit
+   against the translucent track. Hue, ring and elevation now agree, so the
+   state still reads without relying on the shadow. */
+.tab-active {
+  background: var(--brand-600);
+  color: #fff;
+  box-shadow:
+    var(--lg-spec-strong),
+    0 0 0 1px var(--brand-700),
+    0 1px 2px rgba(15, 23, 42, 0.14),
+    0 8px 20px -8px rgba(37, 99, 235, 0.55);
+}
+/* The count badge inverts, so it reads as a light chip punched into the blue
+   instead of the grey blob `--gray-100` would have become against it. */
+.tab-active .badge {
+  background: #fff;
+  color: var(--brand-700);
+}
+/* `.tab:hover` is (0,2,0) and would otherwise outrank `.tab-active` (0,1,0),
+   dragging the active tab's label back to grey while it is being hovered. */
+.tab-active:hover {
+  color: #fff;
+}
+
+/* ---------------- overlay sheets ---------------- */
+
+.modal-backdrop {
+  background: rgba(15, 23, 42, 0.3);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+}
+.modal {
+  background: var(--lg-fill-strong);
+  -webkit-backdrop-filter: blur(30px);
+  backdrop-filter: blur(30px);
+  /* A hairline, not `--lg-edge`. That edge is white, which was designed to be
+     seen against a darker glass; on a near-white panel it vanished and the
+     dialog lost its outline entirely. The ink hairline matches the rules the
+     modal draws between its own head, body and foot. */
+  border: 1px solid var(--lg-hairline);
+  border-radius: 24px;
+  box-shadow: var(--lg-spec-strong), var(--lg-shadow-float);
+}
+.modal-head {
+  border-bottom: 1px solid var(--lg-hairline);
+}
+.modal-foot {
+  border-top: 1px solid var(--lg-hairline);
+}
+
+/* `Modal variant="solid"` — an opaque panel on a deeper scrim.
+   Currently just the Reschedule dialog, whose body is a wall of small time
+   buttons: on a translucent panel the page behind showed through the gaps
+   between them, and the selected time was hard to tell from the rest.
+
+   TWO THINGS THIS HAS TO CARRY
+
+   The backdrop-filter is CANCELLED, not just overridden in colour. The
+   glass rules above put a 30px blur there to frost what was behind it; an
+   opaque fill has nothing left to sample, so leaving it in would burn a
+   blur on every repaint for no visible result — the same reasoning as
+   `.nav-glass-active` below.
+
+   The scrim is DEEPER. 0.3 is tuned for a panel you can still see the page
+   through; a solid white panel next to it reads as floating on nothing. It
+   lands on the same 0.45 the reduced-transparency block already uses for
+   opaque overlays, so the two agree. */
+.modal-solid {
+  background: #fff;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.modal-backdrop-solid {
+  background: rgba(15, 23, 42, 0.45);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+/* `.modal .card` tints cards with ink so they separate from the glass. On a
+   white panel the equivalent is a hair of grey, not more ink. */
+.modal-solid .card {
+  background: var(--gray-50);
+}
+/* `.btn-secondary` carries a WHITE edge, because that is what separates a
+   button from a frosted panel. On an opaque panel that edge has nothing left
+   to contrast with and vanishes, which would leave the Reschedule dialog's
+   unselected times reading as bare text — exactly the confusion the solid
+   panel was meant to fix. The ink hairline is the same one the modal draws
+   between its own head, body and foot, so the controls match the container.
+   Hover is lifted to the plain `--gray-50` for the same reason: the glass
+   hover is white-on-white too. */
+.modal-solid .btn-secondary,
+.modal-solid .btn-glass {
+  border-color: rgba(15, 23, 42, 0.12);
+}
+.modal-solid .btn-secondary:hover:not(:disabled) {
+  background: var(--gray-50);
+  border-color: rgba(15, 23, 42, 0.22);
+}
+
+.drawer-backdrop {
+  background: rgba(15, 23, 42, 0.3);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.drawer-panel {
+  background: rgba(255, 255, 255, 0.72);
+  -webkit-backdrop-filter: blur(28px);
+  backdrop-filter: blur(28px);
+  border: 1px solid var(--lg-edge);
+  border-radius: 22px;
+  box-shadow: var(--lg-spec-strong), var(--lg-shadow-float);
+}
+/* Inside the drawer's own glass a white thumb would disappear, so the
+   selection is pressed into the material instead: a soft ink wash. */
+.drawer-link.active {
+  background: rgba(15, 23, 42, 0.07);
+  border: 1px solid rgba(15, 23, 42, 0.04);
+  color: var(--gray-900);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
+/* Header nav pill — the "you are here" marker.
+
+   It was a white 0.72 glass thumb, which is white 0.72 sitting on a header that
+   is itself white 0.52: a 0.2 step of white on white. Once the pale-blue page
+   showed through the bar's blur, the pill had nothing to read against and the
+   current page looked the same as every other one. Separating from a LIGHT
+   surface means going darker, not lighter, so the pill is now solid brand-600
+   under white text (~5.5:1) — the same fill the page tabs use, so "you are here"
+   looks identical wherever it appears. */
+.nav-glass-active {
+  background: var(--brand-600);
+  color: #fff;
+  border-color: transparent;
+  /* The earlier glass rule turns on a backdrop-filter for the frosted look. An
+     opaque fill has nothing left to sample, so it is cancelled here rather than
+     left burning a blur on every nav repaint. */
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.14),
+    0 6px 16px -8px rgba(37, 99, 235, 0.5);
+}
+.nav-glass-active:hover:not(:disabled) {
+  background: var(--brand-700);
+  color: #fff;
+}
+
+/* ---------------- floating controls ---------------- */
+
+.chat-float-btn {
+  background: rgba(255, 255, 255, 0.66);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  border: 1px solid var(--lg-edge);
+  box-shadow: var(--lg-spec), var(--lg-shadow-sm);
+}
+.chat-float-btn:hover {
+  box-shadow: var(--lg-spec), var(--lg-shadow);
+}
+.chat-popup {
+  background: rgba(255, 255, 255, 0.78);
+  -webkit-backdrop-filter: blur(30px);
+  backdrop-filter: blur(30px);
+  border: 1px solid var(--lg-edge);
+  border-radius: 24px;
+  box-shadow: var(--lg-spec-strong), var(--lg-shadow-float);
+}
+.chat-window {
+  background: rgba(255, 255, 255, 0.42);
+}
+.chat-input-area {
+  background: rgba(255, 255, 255, 0.5);
+  border-top: 1px solid var(--lg-hairline);
+}
+
+.toast {
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--gray-800);
+  border: 1px solid var(--lg-edge);
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+  box-shadow: var(--lg-spec-strong), var(--lg-shadow-float);
+}
+.toast::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-top: 0.42em;
+  border-radius: 50%;
+  background: var(--gray-400);
+}
+.toast-success,
+.toast-error,
+.toast-warning {
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--gray-800);
+}
+.toast-success::before {
+  background: var(--success);
+}
+.toast-error::before {
+  background: var(--danger);
+}
+.toast-warning::before {
+  background: var(--warning);
+}
+
+/* ---------------- keyboard focus ---------------- */
+
+.btn:focus-visible,
+.tab:focus-visible,
+.drawer-link:focus-visible,
+.shell-side a:focus-visible {
+  outline: 2px solid var(--brand-500);
+  outline-offset: 2px;
+}
+
+/* ---------------- inner tiles (flat, no blur) ---------------- */
+
+.stat {
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid var(--lg-edge);
+  border-radius: 16px;
+  box-shadow: var(--lg-spec), 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.divider {
+  background: var(--lg-hairline);
+}
+
+/* ---------------- graceful degradation ---------------- */
+
+@supports not (
+  (backdrop-filter: blur(2px)) or (-webkit-backdrop-filter: blur(2px))
+) {
+  .app-header,
+  .card,
+  .glass,
+  .glass-panel,
+  .glass-card,
+  .glass-stat,
+  .modal,
+  .drawer-panel,
+  .chat-popup,
+  .toast,
+  .btn-secondary,
+  .btn-glass,
+  .chat-float-btn {
+    background: rgba(255, 255, 255, 0.95);
+  }
+  .modal,
+  .drawer-panel,
+  .chat-popup {
+    background: #fff;
+  }
+  .modal-backdrop,
+  .drawer-backdrop {
+    background: rgba(15, 23, 42, 0.45);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .app-header,
+  .card,
+  .glass,
+  .glass-panel,
+  .glass-card,
+  .glass-stat,
+  .modal,
+  .drawer-panel,
+  .chat-popup,
+  .toast,
+  .btn-secondary,
+  .btn-glass,
+  .chat-float-btn {
+    background: #fff;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .modal-backdrop,
+  .drawer-backdrop {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .tabs,
+  .input,
+  .select,
+  .textarea {
+    background: rgba(255, 255, 255, 0.92);
+  }
+}
+
+@media (prefers-contrast: more) {
+  .card,
+  .glass,
+  .glass-panel,
+  .glass-card,
+  .glass-stat,
+  .modal,
+  .drawer-panel,
+  .chat-popup,
+  .tabs {
+    background: #fff;
+    border-color: rgba(15, 23, 42, 0.3);
+  }
+  .input,
+  .select,
+  .textarea {
+    border-color: rgba(15, 23, 42, 0.45);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* =============================================================================
+   Responsive header + hamburger sheet  (≤900px only)
+   -----------------------------------------------------------------------------
+   Nothing above this block is edited by it. Two things made that necessary:
+
+   1. The bar carried its layout as inline styles (`gap: 1.5rem`, brand font
+      size, `text-decoration`), and a media query can never beat an inline
+      style — so those values moved into `.app-header-*` classes, restated at
+      their exact desktop values before the queries below narrow them.
+   2. `.drawer-panel` and its glass restyle live earlier in the sheet; this
+      block re-declares them under `max-width` so the desktop cascade reads
+      exactly as it did before.
+
+   Width tiers:
+     >900px   nav · bell · account · sign out      toggle hidden
+     601–900  nav moves into the sheet; account stays on the bar
+     ≤600px   brand + toggle (guests: brand + the two auth buttons)
+   ============================================================================= */
+
+/* --- the bar: desktop values, restated so the queries below can win ------- */
+.app-header-bar {
+  height: 100%;
+  gap: 1.5rem;
+}
+.app-header-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-shrink: 0;
+  text-decoration: none;
+}
+/* The brand is not a nav item — the global `a:hover` underline must never
+   reach it. That used to be an inline `text-decoration: none`; this beats
+   `a:hover` (0,2,1 vs 0,1,1) with the same result. */
+.app-header-brand:hover {
+  text-decoration: none;
+}
+.app-header-brand strong {
+  font-size: 1.05rem;
+}
+/* --- the account menu ---------------------------------------------------
+   Identity and sign out used to be two controls. Merging them is what lets
+   an admin's eight-link nav coexist with the account at all, so the width
+   rules here are load-bearing rather than cosmetic. */
+.account {
+  position: relative;
+  flex-shrink: 0;
+}
+.account-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 40px;
+  padding: 0.2rem 0.5rem 0.2rem 0.3rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  /* Same rule the app uses for every other control: announce the target on
+     focus, not only on hover. */
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+.account-btn:hover,
+.account-btn-open {
+  background: rgba(255, 255, 255, 0.62);
+  border-color: var(--lg-hairline);
+}
+.account-btn:focus-visible {
+  outline: 2px solid var(--brand-600);
+  outline-offset: 2px;
+}
+.account-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.2;
+  min-width: 0;
+  text-align: left;
+  /* A long name ellipsizes rather than widening the trigger. The avatar is
+     the identifier, so clipping the text costs nothing. */
+  max-width: 130px;
+}
+.account-text > span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-text .tiny {
+  text-transform: capitalize;
+}
+.caret-icon {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: var(--gray-500);
+  transition: transform 0.18s var(--lg-ease);
+}
+.caret-icon-up {
+  transform: rotate(180deg);
+}
+
+.account-menu {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  z-index: 210;
+  width: 268px;
+  padding: 0.85rem;
+  background: rgba(255, 255, 255, 0.94);
+  -webkit-backdrop-filter: blur(28px);
+  backdrop-filter: blur(28px);
+  border: 1px solid var(--lg-hairline);
+  border-radius: 16px;
+  box-shadow: var(--lg-spec-strong), var(--lg-shadow);
+  /* Near-opaque rather than the header's 0.52: this panel is the one place a
+     click lands on a destructive action, so the words under it must not shift
+     or pick up the page behind as the user moves toward them. */
+  animation: account-menu-in 0.16s var(--lg-ease);
+}
+@keyframes account-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.account-menu-head {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0 0.35rem 0.85rem;
+  min-width: 0;
+}
+.account-menu-id {
+  min-width: 0;
+  line-height: 1.35;
+}
+.account-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.55rem 0.6rem;
+  margin-top: 0.15rem;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--gray-700);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+.account-item:hover:not(:disabled) {
+  background: var(--gray-100);
+  color: var(--gray-900);
+  text-decoration: none;
+}
+.account-item:focus-visible {
+  outline: 2px solid var(--brand-600);
+  outline-offset: -2px;
+}
+/* Danger on hover only, for the same reason as the bar's own sign-out button:
+   permanently red beside someone's name cries wolf on every page, and nothing
+   is destroyed by clicking it. */
+.account-item-signout:hover:not(:disabled) {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+.account-item-signout:disabled {
+  cursor: progress;
+}
+
+/* Between 1025px and ~1200px the admin bar fits but cannot afford the name and
+   role beside the avatar. They are the expendable half - the avatar already
+   identifies the account and the menu repeats every field - so they go and the
+   name stays readable instead of everything being squeezed. Above 1200px there
+   is slack and they return. Bounded below at 1025px because under 1024px the
+   whole cluster is in the drawer and none of this applies. */
+@media (max-width: 1200px) and (min-width: 1025px) {
+  .account-text {
+    display: none;
+  }
+}
+
+/* The 1025px-1100px band is the one place an admin's bar is still too full.
+   Eight nowrap nav links make it the widest in the app, and the buttons carry
+   `0.7rem` of side padding each — 16 declarations' worth of it. Reclaiming
+   that here is the cheapest way to buy the ~60px the bar needs at its
+   tightest, and it costs the account nothing: the squeeze lands on the nav's
+   own padding, which is slack by design, rather than on the identity, which is
+   not. Above 1100px the bar fits and the buttons are comfortable again. */
+@media (max-width: 1100px) and (min-width: 1025px) {
+  .app-header-bar nav {
+    gap: 0.2rem;
+  }
+  .app-header-bar nav .btn {
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+  }
+}
+
+/* --- sign out -------------------------------------------------------------
+   Now only the drawer's full-width sign-out button, at ≤1024px. The bar's own
+   copy of this control was merged into the account menu (`.account-item-
+   signout`) because a permanent 100px button for the least-used action on the
+   header was what pushed the identity out of the admin bar entirely.
+
+   Neither a destination nor a destructive-data action, so it sits between the
+   two: quieter than the nav it sits beside, but still a control and not bare
+   text. It was a `btn-secondary`, which put a solid white chip on the bar at
+   the same weight as a guest's "Sign in" — for the person who uses this bar
+   every day, sign-out is the least-used thing on it.
+
+   Three deliberate choices:
+     · The fill is translucent and the border is a real hairline at rest. A
+       hover-only border leaves the control unannounced until you already know
+       it is there, which is the wrong default for the one way out of an
+       account.
+     · No lift shadow. `btn-secondary` carries one; here it reads as a call to
+       action, and the rest of the sheet should not have to compete.
+     · Danger is a hover state, not a resting one. Permanently red text beside
+       someone's name cries wolf on every single page, and nothing is thrown
+       away by clicking here. */
+.signout-btn {
+  gap: 0.4rem;
+  padding: 0.4rem 0.8rem;
+  color: var(--gray-600);
+  background: rgba(255, 255, 255, 0.44);
+  border-color: var(--lg-hairline);
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+.signout-btn:hover:not(:disabled) {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: rgba(220, 38, 38, 0.3);
+}
+.signout-btn:active:not(:disabled) {
+  background: rgba(220, 38, 38, 0.14);
+}
+/* `.btn:disabled` says not-allowed, but this control is not refusing the
+   click - it is reporting that the click already landed. */
+.signout-btn:disabled {
+  cursor: progress;
+}
+.signout-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+/* Unread count inside the sheet's Notifications row. Only ever rendered by
+   the menu, so it needs no media query of its own. */
+.drawer-badge {
+  margin-left: auto;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 700;
+  display: inline-grid;
+  place-items: center;
+}
+
+/* The bell, the account cluster and sign out all use `hide-sm` now, so they
+   collapse at the same 900px as the nav. They used to hold their ground until
+   phones via `hide-xs`, which left a tablet bar carrying brand + toggle and
+   three empty gaps - controls the open drawer was already showing, since its
+   head has the avatar and email and its foot has sign out. The extra rule is
+   gone rather than left as a no-op: it had no other users. */
+
+/* --- tablets: a bar with purpose, and a docked sheet --------------------- */
+@media (max-width: 900px) {
+  .app-header-bar {
+    gap: 0.5rem;
+  }
+  /* 34px is a mouse target; this is a thumb. */
+  .app-header .btn-icon {
+    width: 40px;
+    height: 40px;
+    flex-shrink: 0;
+  }
+  .menu-toggle {
+    font-size: 1.05rem;
+    border-radius: 12px;
+  }
+
+  /* Out-ranks the floating chat control (600) now that the overlay no longer
+     lives inside the header's stacking context (100).
+
+     The wash is white, not a dark scrim. The sheet is already white, so a dark
+     dim behind it tinted the whole menu dark through the glass. Held just under
+     opaque: the page behind stays faintly visible, so it still reads as an
+     overlay rather than a cut to a new screen, and the sheet's own shadow
+     still separates it from the wash on tablet where it is docked to the side. */
+  .drawer-backdrop {
+    z-index: 650;
+    background: rgba(255, 255, 255, 0.92);
+  }
+  /* From a 320px floating card to a full-height sheet docked to the right
+     edge: more room for links, and its head sits where the toggle was, so
+     closing happens where opening happened. */
+  .drawer-sheet {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: auto;
+    width: min(360px, 88vw);
+    height: auto;
+    display: flex;
+    flex-direction: column;
+    padding: 1rem;
+    padding-top: max(1rem, env(safe-area-inset-top));
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+    border-radius: 24px 0 0 24px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    transform-origin: center right;
+    z-index: 651;
+    animation: drawerSlideRight 0.26s cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+  /* Sign out rides the bottom edge instead of trailing the last link, so the
+     sheet reads the same whichever role fills it. */
+  .drawer-foot {
+    margin-top: auto;
+  }
+  /* The sheet is a flex column, which would stretch a chip to full width. */
+  .drawer-role {
+    align-self: flex-start;
+  }
+  .drawer-head .btn-icon {
+    width: 40px;
+    height: 40px;
+    /* `.btn-sm` drops the glyph to 0.8rem inside a 40px target — too small
+       to read as the thing that closes the menu. */
+    font-size: 1rem;
+  }
+  /* Tap targets: the links were 33px tall, well under the 44px minimum. */
+  .drawer-link {
+    min-height: 44px;
+    padding: 0.7rem 0.9rem;
+    font-size: 0.95rem;
+    border-radius: 14px;
+  }
+  /* Sign out is the row above it on every width, so it owes the same target —
+     and it is the only control in the sheet whose height the reader cannot
+     infer from a row of links above it. */
+  .drawer-foot .signout-btn {
+    min-height: 44px;
+    font-size: 0.9rem;
+    border-radius: 14px;
+  }
+}
+
+@keyframes drawerSlideRight {
+  from {
+    opacity: 0.35;
+    transform: translateX(100%);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* --- phones: the sheet becomes the screen ------------------------------- */
+@media (max-width: 600px) {
+  .app-header-bar {
+    gap: 0.4rem;
+  }
+  .drawer-sheet {
+    left: 0;
+    right: 0;
+    width: auto;
+    border-radius: 0;
+  }
+}
+
+/* --- the narrowest phones, where brand + two auth buttons still fit ------ */
+@media (max-width: 400px) {
+  .app-header-bar {
+    gap: 0.35rem;
+  }
+  .app-header-brand strong {
+    font-size: 0.98rem;
+  }
+}
+
+/* ---------------- not found ----------------
+ *
+ * A 404 is the one page a visitor reaches by having already hit a problem, so
+ * it has to be calm rather than decorative. Two decisions shape the layout:
+ *
+ *   * the artwork is beside the copy on wide screens and above it on phones,
+ *     so the words are never pushed below a tall illustration on a phone, which
+ *     is where someone who just hit a dead link is most likely to be reading.
+ *
+ * The page carries a headline, one sentence and two ways forward, and nothing
+ * else. An earlier version also echoed the attempted URL back as a code chip;
+ * it was cut because the path is already visible in the address bar, and a
+ * second copy turned a calm explanation into something that read like an error
+ * report. The calm is the point: someone who arrives here has already hit a
+ * problem, and this is the last screen they should have to read through.
+ */
+.nf {
+  display: flex;
+  align-items: center;
+  /* `100vh` on a phone includes the collapsing URL bar, which overstates the
+     viewport and pushes the footer below the fold. `dvh` is the height the
+     browser actually has right now; the `vh` above it is the fallback for
+     anything that does not support it. */
+  min-height: calc(100vh - var(--header-h));
+  min-height: calc(100dvh - var(--header-h));
+  padding: 3rem 0 4rem;
+}
+.nf-grid {
+  display: grid;
+  gap: 2.5rem;
+  align-items: center;
+  /* Single column first: the illustration is the first thing read on a phone
+     and the copy must not be pushed under it. */
+  grid-template-columns: minmax(0, 1fr);
+}
+@media (min-width: 760px) {
+  .nf-grid {
+    grid-template-columns: minmax(0, 340px) minmax(0, 1fr);
+    gap: 3.5rem;
+  }
+}
+
+.nf-art {
+  display: flex;
+  justify-content: center;
+}
+.nf-art-svg {
+  width: 100%;
+  /* Above the copy on wide screens, capped so it does not dominate a tall
+     desktop viewport. */
+  max-width: 340px;
+  height: auto;
+}
+
+.nf-copy {
+  max-width: 46ch;
+}
+@media (min-width: 760px) {
+  .nf-copy {
+    /* Centred under the artwork when the grid stacks on a phone. */
+    margin: 0 auto;
+    text-align: left;
+  }
+}
+@media (max-width: 759px) {
+  .nf-copy {
+    text-align: center;
+    margin: 0 auto;
+  }
+  .nf-actions {
+    justify-content: center;
+  }
+}
+
+.nf-title {
+  margin: 0 0 0.6rem;
+  font-size: clamp(1.6rem, 1.2rem + 1.6vw, 2.3rem);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+.nf-lede {
+  margin: 0 0 1.1rem;
+  color: var(--gray-600);
+  /* A measure, not a width: full-width body copy at this size is tiring. */
+  max-width: 44ch;
+}
+@media (max-width: 759px) {
+  .nf-lede {
+    margin-left: auto;
+    margin-right: auto;
+  }
+}
+
+.nf-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+/* Buttons go full width on a phone: two half-width primary actions read as one
+   broken button, and a thumb should not have to hit a 90px target. */
+@media (max-width: 480px) {
+  .nf-actions .btn {
+    flex: 1 1 100%;
+    justify-content: center;
+  }
+}
+/* The artwork drifts in once on arrival. Motion only, no layout shift, and off
+   entirely for anyone who has asked for less of it. */
+@media (prefers-reduced-motion: no-preference) {
+  .nf-art-svg {
+    animation: nfArtDrift 0.7s var(--lg-ease) both;
+  }
+  .nf-copy > * {
+    animation: nfCopyRise 0.55s var(--lg-ease) both;
+  }
+  /* The copy is title, lede, then the actions. The actions are conditional on
+     the session having restored, so these are positional rather than named:
+     whichever of the three exist rise in order. */
+  .nf-copy > *:nth-child(2) { animation-delay: 0.05s; }
+  .nf-copy > *:nth-child(3) { animation-delay: 0.1s; }
+}
+@keyframes nfArtDrift {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes nfCopyRise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* =============================================================================
+   Crash screen (ErrorBoundary)
+   -----------------------------------------------------------------------------
+   A sibling of `.nf` above, and built to the same brief: someone reaching this
+   has ALREADY hit a problem, so it is the last screen they should have to read.
+   Calm, one heading, a clear way out. No body copy at all - a paragraph here
+   would have to either explain the failure, which the boundary cannot know, or
+   reassure, which it cannot verify either.
+
+   THREE THINGS THAT MADE THE PREVIOUS VERSION LOOK BROKEN
+   ------------------------------------------------------
+   1. It was a `.card` inside a `.container`. A very wide, very short bordered
+      slab reads as a component that failed to render rather than as a screen,
+      and this is the one page where that impression is worst.
+   2. It used `.empty-icon`, which is `2rem` at `opacity: 0.5`. The single
+      element carrying all the presence was also the faintest thing on screen.
+   3. It sat in the top third of the viewport with a void beneath it, which
+      looks like the rest of the page failed to load. It usually did not.
+
+   So: no card, a real mark at a real size, and the whole thing centred in the
+   viewport it owns.
+
+   THE HEADER AND FOOTER ARE NOT HERE
+   The boundary wraps <App />, so a crash replaces the shell as well as the page
+   and there is no navigation left. That is why "Go to home" is a live route out
+   and not decoration: it is the only way back into the app for a visitor who
+   cannot make either button work. */
+.errpage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* This owns the full viewport: there is no header above it to subtract, and
+     `dvh` keeps a phone's collapsing URL bar from overstating the height and
+     pushing the actions below the fold. The `vh` line is the fallback. */
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 2.5rem 1.25rem;
+}
+.errpage-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  /* Wide enough that the heading sets on ONE line at desktop size. At 34ch it
+     broke into three, which read as cramped and made a nine-word sentence look
+     longer than it is. It still wraps on its own on a phone. */
+  max-width: 46ch;
+  /* Required, and easy to miss: `.container` is full width up to 1200px, so a
+     flex column inside it fills that width and centres its CONTENT while the
+     column itself sits hard against the left edge — vertically centred, but
+     visibly off to one side. `.nf-copy` carries the same line for the same
+     reason. */
+  margin: 0 auto;
+}
+
+/* The ring buoy is the artwork, so it is treated as artwork: a tinted disc with
+   a soft brand shadow under it, at a size that can carry the screen. */
+/* The ring buoy is the artwork, so it is treated as artwork: a tinted disc with
+   a soft brand shadow under it, at a size that can carry the screen.
+
+   A fixed square, deliberately. Sizing it by padding instead produces an OVAL:
+   the lifebuoy's advance width is noticeably wider than the line box its font
+   size sets, so a box that hugs the glyph is wider than it is tall, and
+   `border-radius: 50%` then draws an ellipse rather than a disc. */
+.errpage-mark {
+  display: grid;
+  place-items: center;
+  width: 80px;
+  height: 80px;
+  margin-bottom: 1.6rem;
+  border-radius: 50%;
+  background: var(--brand-50);
+  border: 1px solid var(--brand-100);
+  box-shadow:
+    var(--lg-spec),
+    0 12px 26px -16px rgba(37, 99, 235, 0.5);
+  font-size: 2.6rem;
+  line-height: 1;
+}
+
+.errpage-title {
+  margin: 0 0 0.7rem;
+  font-size: clamp(1.45rem, 1.1rem + 1.5vw, 2.05rem);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  color: var(--gray-900);
+  /* `balance` so a two-line heading splits evenly instead of orphaning the last
+     word. */
+  text-wrap: balance;
+}
+
+/* One sentence, and only what a boundary can know: something threw while this
+   screen was rendering. Measured rather than full width — centred body copy
+   across 1200px is unreadable, and this is the last screen anyone reads. */
+.errpage-lede {
+  margin: 0 0 1.9rem;
+  max-width: 40ch;
+  color: var(--gray-600);
+  font-size: 0.95rem;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+/* The two recovery actions sit together as one cluster: they are the same kind
+   of thing, tried in order of reliability. There is now only one of them, so
+   this is a row of one — kept as a flex row rather than a lone button so the
+   layout does not change if a second action is ever added back. */
+.errpage-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.6rem;
+}
+/* Full width on a phone, for the same reason as `.nf-actions`: two half-width
+   buttons read as one broken button. */
+@media (max-width: 480px) {
+  .errpage-actions .btn {
+    flex: 1 1 100%;
+    justify-content: center;
+  }
+}
+
+/* Quieter than the buttons on purpose. It is the third way out, and it should
+   look like the third way out - but it is underlined so it still reads as a
+   link rather than as leftover body text. */
+.errpage-home {
+  margin-top: 1.45rem;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--gray-500);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--gray-300);
+  transition: color 0.15s ease;
+}
+.errpage-home:hover {
+  color: var(--brand-700);
+  text-decoration-color: currentColor;
+}
+.errpage-home:focus-visible {
+  outline: 2px solid var(--brand-600);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .errpage-inner > * {
+    animation: nfCopyRise 0.5s var(--lg-ease) both;
+  }
+  /* Positional, like `.nf-copy`: mark, title, actions, link. */
+  .errpage-inner > *:nth-child(2) { animation-delay: 0.06s; }
+  .errpage-inner > *:nth-child(3) { animation-delay: 0.11s; }
+  .errpage-inner > *:nth-child(4) { animation-delay: 0.16s; }
+}
+
+
+/* ---------------- appointment action buttons ----------------
+ *
+ * The three actions on an appointment were a green primary, a glassy white
+ * secondary and a transparent red ghost: three different materials in one row,
+ * and the glassy one all but vanished into the pale page behind it. They now
+ * share the active-tab fill (brand-600 under white text), so the row reads as a
+ * single control instead of three competing chips.
+ *
+ * THE WIPE
+ *   Each button carries a `::after` overlay that scales horizontally across it.
+ *   Its `transform-origin` is chosen by POSITION in the group, so the blue
+ *   always travels outward toward the edge that was clicked: the leftmost button
+ *   wipes right-to-left, the rightmost left-to-right, and a middle button falls
+ *   back to the centre. Doing it with :first-child / :last-child rather than
+ *   with an index means the direction follows the row automatically - which
+ *   matters here, because the doctor's group changes size with the status.
+ *
+ * PLACED LAST IN THE FILE on purpose: the button materials above reach
+ * `.btn-secondary:hover:not(:disabled)` at (0,3,0), so these carry a matching
+ * hover/disabled selector rather than relying on the bare rule winning.
+ */
+.appt-btn-group .appt-btn {
+  position: relative;
+  overflow: hidden;
+  /* Establishes a stacking context so the overlay can sit behind the label with
+     a negative z-index, instead of needing the text wrapped in its own span. */
+  isolation: isolate;
+  background: var(--brand-600);
+  color: #fff;
+  border-color: transparent;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.14),
+    0 6px 16px -8px rgba(37, 99, 235, 0.5);
+}
+.appt-btn-group .appt-btn:hover:not(:disabled),
+.appt-btn-group .appt-btn:focus-visible:not(:disabled) {
+  background: var(--brand-600);
+  color: #fff;
+}
+.appt-btn-group .appt-btn:disabled {
+  background: var(--brand-600);
+  color: #fff;
+  opacity: 0.55;
+}
+.appt-btn-group .appt-btn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  /* Behind the label, above the button's own fill. */
+  z-index: -1;
+  background: var(--brand-700);
+  transform: scaleX(0);
+  transform-origin: center center;
+  pointer-events: none;
+}
+.appt-btn-group .appt-btn:first-child::after {
+  transform-origin: right center;
+}
+.appt-btn-group .appt-btn:last-child::after {
+  transform-origin: left center;
+}
+.appt-btn-group .appt-btn.is-wiping::after {
+  animation: apptOutwardWipe 0.34s var(--lg-ease) forwards;
+}
+@keyframes apptOutwardWipe {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+/* One group, one motion: the sweep is the confirmation. With the motion
+   preference off, the buttons are still brand-600 and still differ from the
+   disabled state, so nothing about the control's meaning depends on the wipe. */
+@media (prefers-reduced-motion: reduce) {
+  .appt-btn-group .appt-btn.is-wiping::after {
+    animation: none !important;
+  }
+}
+
+/* =============================================================================
+   Notifications inbox — swipe to remove, and the safety net under it
+   -----------------------------------------------------------------------------
+   PLACED LAST IN THE FILE on purpose, like the block above it: `.btn-ghost`
+   and `.btn-danger` are declared earlier and would otherwise win on ties.
+
+   THE MATERIAL IS CAREFULLY OPAQUE
+     The row slides sideways to uncover the action button behind it, which only
+     reads as "behind" if the row is actually opaque. `.glass-card` is 0.75
+     white over a blurred backdrop — at that opacity a red button showing
+     through the row tinted the whole card pink and the drag looked like a
+     rendering bug. The row gets its own near-opaque fill so the same
+     translucency language holds everywhere else on the page.
+
+   `.swipe-row` clips its children because the row's own left/right radii are
+   what make the exit animation read as a card being removed, not a rectangle
+   being cropped.
+   ============================================================================= */
+
+.swipe-row {
+  position: relative;
+  border-radius: var(--radius-lg);
+  /* The browser keeps the vertical axis (so the page still scrolls under a
+     sideways finger) and hands the horizontal one to the gesture handler. */
+  touch-action: pan-y;
+  overflow: hidden;
+  /* A drag across a row of text selects the text: the browser has no way of
+     knowing this is a control, and a selection ending mid-message is worse
+     than the swipe never registering. Selection is not hit-testing, so the
+     row's own buttons still receive clicks. */
+  -webkit-user-select: none;
+  user-select: none;
+  /* Set by SwipeableRow on the way out. Unset at rest, where the row is
+     exactly as tall as its content. */
+  max-height: var(--exit-height, none);
+}
+
+/* The sliding layer.
+ *
+ * The transform is written by the component, imperatively, once per frame. It is
+ * deliberately NOT a CSS transition: the gesture and the spring both drive it
+ * directly, and a transition layered on top makes the row chase its own
+ * animation and arrive late — which is exactly the lag this replaced. */
+.swipe-body {
+  position: relative;
+  z-index: 1;
+  transform: translate3d(0, 0, 0);
+  /* Clips the parallax: the content is translated back towards the middle of the
+     card as the card slides, which would otherwise push it out past the card's
+     own trailing edge and over the action underneath. */
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.86);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 10px 30px rgba(31, 38, 135, 0.08);
+}
+/* Compositor hints only while moving: a permanent `will-change` asks for a layer
+   per row in the list and gives back nothing for the forty that are at rest. */
+.swipe-row-dragging {
+  will-change: transform;
+}
+.swipe-row-dragging .swipe-body {
+  /* Lifted as it is pulled, so the row reads as a held object rather than as
+     part of the page sliding under the finger. */
+  box-shadow: var(--lg-spec), var(--lg-shadow-float);
+}
+/* The PARALLAX.
+   The card's content trails the card by 16% of its travel, in the opposite
+   direction. Without it a row slid to its confirm bar presents its text sliced
+   off mid-word at the container's edge, which reads as a clipping bug; with it
+   the words drift across the shrinking card and stay whole. It also gives the
+   gesture depth: the surface moves, the content follows more slowly, which is
+   what separates a card from the page behind it. */
+.swipe-body > * {
+  transform: translateX(calc(var(--swipe-x, 0px) * -0.16));
+}
+/* The tactile half of the lift: the card shrinks a hair while it is held, so the
+   row feels picked up rather than scrolled. On the CHILD, because the parent's
+   transform is written every frame and has to stay free for the drag. */
+.swipe-row-dragging .swipe-body > * {
+  transform: translateX(calc(var(--swipe-x, 0px) * -0.16)) scale(0.985);
+  transition: transform 0.18s var(--lg-ease);
+}
+
+/* The actions, revealed underneath. */
+.swipe-actions {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  /* No pointer events on the layer itself — only on the buttons that are
+     currently revealed, so a swipe past the row's edge cannot press something
+     the user never saw. */
+  pointer-events: none;
+}
+.swipe-action {
+  /* Sized to the reveal distance, not to half the row. A `flex: 1` button on a
+     700px row is 350px wide with 104px of it visible: its own centre sits under
+     the sliding body, so both a click and a screen-reader activation land on
+     the row instead of the action. */
+  flex: 0 0 var(--swipe-reveal, 104px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.15rem;
+  border: none;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 650;
+  color: #fff;
+  cursor: pointer;
+  /* PROGRESS, not a class flip.
+     `--action-progress` is written by the gesture, 0 to 1.
+
+     The FILL stays transparent until the row has actually started moving, and
+     is solid from about a fifth of the reveal onward. It has to be invisible at
+     rest: the row's own surface is 0.86 white, not opaque, so a solid fill parked
+     behind it bled through the row's rounded corners as a coloured sliver —
+     red on a row, green on the next, blue on the third, on a page where nothing
+     was swiped. And it has to be solid once revealed, because a half-opacity
+     fill washes out to pale pink and reads as a rendering fault rather than as
+     an action still being uncovered. */
+  opacity: clamp(0, calc((var(--action-progress, 0) - 0.06) * 5), 1);
+  --shown: clamp(0, calc(var(--action-progress, 0) * 1.7), 1);
+}
+/* The CONTENT is what fades and scales in, so the action grows into view with
+   the row rather than appearing at a threshold. */
+.swipe-action-icon,
+.swipe-action-label {
+  opacity: var(--shown);
+  transform: scale(calc(0.78 + 0.22 * var(--shown)));
+}
+.swipe-action-icon {
+  /* The "unread" action is a filled dot, which is a small glyph at body size —
+     big enough to read as a mark rather than as dust. */
+  font-size: 1.2rem;
+  line-height: 1;
+}
+/* The two sides are distinguished by COLOUR and by which end of the row they
+   uncover, not by where their label sits: the reveal already says which way the
+   row went, and centring the content in a 104px block looks deliberate where an
+   edge-hugging label looks cramped.
+   (Both are `flex-direction: column`, so `justify-content` is the VERTICAL axis —
+   setting it to `flex-end` here pushed the icon and label to the bottom of the
+   block.) */
+.swipe-action-start,
+.swipe-action-end {
+  align-items: center;
+}
+/* The TONE decides what the action IS; these are separate rules from the
+   position classes above because one rule covering both silently ignored
+   `tone` — the "mark unread" action asked for the brand fill and got the
+   "mark read" green, so the only thing distinguishing them was their label. */
+.swipe-action-success {
+  background: var(--success);
+}
+.swipe-action-danger {
+  background: var(--danger);
+}
+.swipe-action-brand {
+  background: var(--brand-600);
+}
+.swipe-action-neutral {
+  background: var(--gray-600);
+}
+.swipe-action:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: -4px;
+}
+/* The row is already lifted while it is dragged, so the action gets colour
+   feedback only — a shadow here would fight the row's own. `filter` rather
+   than a background change so it works on the green and the red fill alike. */
+.swipe-action:hover {
+  filter: brightness(1.08);
+}
+.swipe-action:active {
+  filter: brightness(0.92);
+}
+/* Once the row has COMMITTED to a side, that action is interactive. During the
+   drag it is visible but not pressable: a pointer still in motion would
+   otherwise be able to trigger the button it happens to be crossing. */
+.swipe-row-open .swipe-action {
+  pointer-events: auto;
+}
+/* THE EDGE, JOINED.
+   The row and the action behind it are two separate boxes, and leaving both
+   rounded leaves a crescent of page background between the card's trailing
+   corner and the action's leading corner — the action then reads as a tile
+   floating next to the card rather than as the card's own edge. Squaring the
+   card's corners on the side it has moved towards closes the seam, and the
+   lift shadow is softened at the same time because a full float shadow cast
+   onto the action fill draws a dark line down the join. */
+.swipe-row-open-start .swipe-body {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  box-shadow: -6px 0 16px -10px rgba(15, 23, 42, 0.35);
+}
+.swipe-row-open-end .swipe-body {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  box-shadow: 6px 0 16px -10px rgba(15, 23, 42, 0.35);
+}
+/* Only the side that is actually uncovered is interactive and in the tab order;
+   the other stays `aria-hidden` so a screen reader does not offer a control the
+   user cannot see. The gesture has already fired by the time a row rests open,
+   so this matters only for a drag that stopped short of committing. */
+.swipe-row-open .swipe-action[aria-hidden="true"] {
+  pointer-events: none;
+}
+/* The lock-in. A gesture that stops without any acknowledgement reads as "the
+   drag ran out"; a brief lift on the action says "that was committed, go ahead".
+   Brightness rather than a scale, because the scale belongs to the row and the
+   two would fight. It runs on the OPEN class only, so it fires once per commit
+   and never on the way back. */
+.swipe-row-open-end .swipe-action-end,
+.swipe-row-open-start .swipe-action-start {
+  animation: swipeCommit 0.34s var(--lg-ease);
+}
+@keyframes swipeCommit {
+  from {
+    filter: brightness(1.18);
+  }
+  to {
+    filter: brightness(1);
+  }
+}
+
+/* THE EXIT
+   Two things happen, and both are needed. The row's CONTENT flies out, and the
+   row's HEIGHT collapses so the rows beneath take its place. Height is animated
+   rather than transformed, because a transform would move the row while leaving
+   its slot in the flow: the gap would stay for the full 240ms and the list would
+   jump at the end instead of closing.
+
+   The split across two classes is load-bearing. `--exit-height` is measured by
+   the component on the way out and gives the transition a LENGTH to start from
+   (`none` cannot be interpolated to `0` — the browser swaps at the halfway mark
+   instead), and `.swipe-row-collapsing` arrives one frame later so the browser
+   has actually observed that starting value before being given a target.
+   Applying both in the same commit skips the animation completely. */
+.swipe-row {
+  --swipe-exit: 0.24s;
+  transition:
+    max-height var(--swipe-exit) var(--lg-ease) var(--exit-delay, 0ms),
+    opacity var(--swipe-exit) linear var(--exit-delay, 0ms);
+}
+.swipe-row-exiting {
+  pointer-events: none;
+}
+.swipe-row-collapsing {
+  max-height: 0;
+  opacity: 0;
+}
+/* The row leaves the way it was thrown: out past the action it uncovered, and
+   further the harder it was flicked (`--throw` is the release velocity, capped
+   in the component). The component clears its inline transform before this runs,
+   so there is nothing to fight — and a slow drag that merely crossed the
+   threshold still travels far enough to read as leaving rather than shrinking
+   in place. */
+.swipe-row-exiting .swipe-body {
+  transform: translate3d(
+    calc(-1 * (var(--swipe-reveal, 104px) + 40px + var(--throw, 0) * 150px)),
+    0,
+    0
+  );
+  opacity: 0;
+  transition: transform var(--swipe-exit, 0.24s) var(--lg-ease), opacity 0.16s linear;
+}
+.swipe-row-exiting .swipe-body > * {
+  transform: scale(0.96);
+}
+
+/* ---------------- the row itself ---------------- */
+
+.notif-card {
+  background: transparent;
+  border-color: var(--lg-hairline);
+  padding: 0.9rem 1rem;
+  transition:
+    box-shadow 0.18s var(--lg-ease),
+    background 0.18s var(--lg-ease);
+}
+.swipe-row:hover .notif-card,
+.swipe-row:focus-within .notif-card {
+  background: rgba(255, 255, 255, 0.62);
+}
+/* Unread is carried by a tinted panel plus a weight change on the subject, not
+   by a border: a 3px left border was previously the only signal, and it moved
+   the whole card 3px sideways every time the row was read. */
+.notif-card-unread {
+  background: rgba(255, 255, 255, 0.55);
+  border-color: rgba(37, 99, 235, 0.22);
+}
+.notif-card-top {
+  gap: 0.7rem;
+  width: 100%;
+}
+.notif-card-body {
+  flex: 1;
+  min-width: 0;
+}
+.notif-card-head {
+  align-items: baseline;
+}
+.notif-text {
+  margin: 0.2rem 0 0;
+}
+.notif-meta {
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}
+.notif-time {
+  flex-shrink: 0;
+}
+
+/* The event marker. A coloured dot rather than a large emoji: at 40 rows an
+   emoji column competes with the subject text for attention, while a 7px dot
+   is scannable without being read. */
+.notif-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  margin-top: 0.42rem;
+  border-radius: 50%;
+  background: var(--gray-400);
+}
+.notif-dot-success {
+  background: var(--success);
+}
+.notif-dot-danger {
+  background: var(--danger);
+}
+.notif-dot-warning {
+  background: var(--warning);
+}
+.notif-dot-info {
+  background: var(--info);
+}
+.notif-dot-brand {
+  background: var(--brand-600);
+}
+
+/* The trailing controls.
+   INVISIBLE UNTIL HOVER OR FOCUS on a pointer device, and ALWAYS VISIBLE where
+   there is no hover (`hover: none` — phones, tablets). That media query is the
+   whole accessibility story for this row: a pointer user learns the buttons
+   exist by hovering, a touch user cannot hover at all and would otherwise be
+   left with only the gesture, and a keyboard user sees them the moment they tab
+   to the row via `:focus-within`. */
+.notif-card-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+.notif-action {
+  width: 30px;
+  height: 30px;
+  font-size: 0.9rem;
+  opacity: 0;
+  /* Invisible means unclickable. An `opacity: 0` button is still hit-testable,
+     so a click aimed at the right-hand edge of the row — where the user
+     expects to swipe — would land on a button they never saw. */
+  pointer-events: none;
+  transition:
+    opacity 0.18s var(--lg-ease),
+    background 0.18s var(--lg-ease),
+    color 0.18s var(--lg-ease);
+}
+.swipe-row:hover .notif-action,
+.swipe-row:focus-within .notif-action {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* Never opacity:0 on a focused control — an invisible tab stop is a trap. */
+.notif-action:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--brand-500);
+  outline-offset: 2px;
+}
+.notif-action-danger:hover:not(:disabled) {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+@media (hover: none) {
+  .notif-action {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+/* ---------------- day grouping ---------------- */
+
+.notif-group + .notif-group {
+  margin-top: 0.9rem;
+}
+.notif-group-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.5rem;
+  padding-left: 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gray-500);
+}
+.notif-group-count {
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--gray-400);
+}
+.notif-hint {
+  margin: 0.35rem 0 0;
+  padding-left: 0.35rem;
+  opacity: 0.75;
+}
+
+/* ---------------- header + clear-all ---------------- */
+
+.notif-head {
+  align-items: flex-start;
+}
+.notif-head-text {
+  min-width: 0;
+}
+/* The header is the one place with three controls competing for the same edge,
+   so they share a row and wrap as a unit rather than each having its own
+   breakpoint — `row-wrap` on the container is what lets them drop to a second
+   line on a phone without the title being pushed off. */
+.notif-head-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.notif-clear-anchor {
+  position: relative;
+}
+/* Danger is a hover state, not a resting one: a permanently red "Remove all"
+   beside a Mark-all-read button cries wolf on a page where most rows are not
+   being removed, and nothing is lost by hovering it. */
+.notif-clear-trigger:hover:not(:disabled) {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.confirm-popover {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  z-index: 20;
+  width: min(280px, calc(100vw - 2.5rem));
+  padding: 0.9rem;
+  border-radius: 14px;
+  background: var(--lg-fill-strong);
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+  border: 1px solid var(--lg-hairline);
+  box-shadow: var(--lg-spec-strong), var(--lg-shadow-float);
+  animation: confirmPop 0.18s var(--lg-ease);
+}
+.confirm-popover-title {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 650;
+  color: var(--gray-900);
+}
+.confirm-popover-body {
+  margin: 0.25rem 0 0.75rem;
+}
+.confirm-popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+/* The less destructive alternative sits below a hairline rather than beside the
+   primary pair: it is a different question ("which of these do I mean?"), not a
+   third button of the same one. */
+.confirm-popover-rule {
+  margin: 0.6rem 0 0.35rem;
+  border: none;
+  border-top: 1px solid var(--lg-hairline);
+}
+.confirm-popover-alt {
+  width: 100%;
+  justify-content: flex-start;
+  padding-left: 0.5rem;
+  font-weight: 550;
+  color: var(--gray-600);
+}
+@keyframes confirmPop {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---------------- undo bar ----------------
+   Bottom-centre rather than the existing toast corner: a toast appears at the
+   top-right next to the header, which is a long way from the row that was just
+   swiped. This appears where the finger already is, and it is deliberately the
+   ONLY thing on screen with a live countdown, so the deadline is unmistakable.
+
+   LAYERING (this was a real bug)
+   Below ~600px the bar spans edge to edge and the floating chat button sits in
+   its bottom-right corner - exactly where the "Undo" button is. At z-index 400
+   against the chat button's 600, the button won, the chat button swallowed the
+   taps, and the undo action could not be performed at all on a phone.
+
+   The bar is transient, expiring, and carries the one action the user cannot
+   recover from losing, so it out-ranks the floating button (600). It is 94%
+   opaque with a backdrop blur, so it simply covers the button for the few
+   seconds it is up and the button returns when it leaves.
+
+   620 is chosen to sit above the floating button (600) and below the chat
+   modal (640), which must keep its backdrop on top or the bar would stay
+   tappable straight through the scrim.
+   */
+.undo-bar {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 620;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: min(460px, calc(100vw - 2rem));
+  padding: 0.7rem 0.7rem 0.7rem 1rem;
+  border-radius: 14px;
+  background: var(--lg-fill-strong);
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+  border: 1px solid var(--lg-hairline);
+  box-shadow: var(--lg-spec-strong), var(--lg-shadow-float);
+  animation: undoBarIn 0.24s var(--lg-ease);
+  overflow: hidden;
+}
+.undo-bar-leaving {
+  animation: undoBarOut 0.24s var(--lg-ease) forwards;
+}
+.undo-bar-icon {
+  font-size: 1rem;
+  line-height: 1;
+  opacity: 0.75;
+}
+.undo-bar-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+}
+.undo-bar-message {
+  font-size: 0.85rem;
+  color: var(--gray-900);
+}
+.undo-bar-detail {
+  font-size: 0.72rem;
+  color: var(--gray-500);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.undo-bar-cta {
+  flex: 0 0 auto;
+  padding: 0.4rem 0.85rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--brand-600);
+  color: #fff;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.undo-bar-cta:hover {
+  background: var(--brand-700);
+}
+.undo-bar-cta:focus-visible {
+  outline: 2px solid var(--brand-700);
+  outline-offset: 2px;
+}
+/* The countdown. It is a bar rather than a ring so it can sit flush with the
+   panel's bottom edge, where it reads as the panel's own edge being consumed. */
+.undo-bar-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: rgba(15, 23, 42, 0.08);
+}
+.undo-bar-fill {
+  display: block;
+  height: 100%;
+  width: 100%;
+  transform-origin: left center;
+  background: var(--brand-500);
+  animation-name: undoBarDrain;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+@keyframes undoBarDrain {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+@keyframes undoBarIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 16px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+@keyframes undoBarOut {
+  to {
+    opacity: 0;
+    transform: translate(-50%, 16px);
+  }
+}
+
+/* ---------------- responsive + motion ---------------- */
+
+@media (max-width: 600px) {
+  .notif-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.75rem;
+  }
+  .notif-head-actions {
+    justify-content: flex-start;
+  }
+  /* Full-width to the right edge: on a phone the row's own right padding puts a
+     swipe target closer to the screen edge than 44px, and this puts the button
+     under the user's thumb instead. */
+  .undo-bar {
+    left: 1rem;
+    right: 1rem;
+    bottom: 1rem;
+    width: auto;
+    transform: none;
+  }
+  .confirm-popover {
+    left: 0;
+    right: auto;
+    width: min(300px, calc(100vw - 3rem));
+  }
+  @keyframes undoBarIn {
+    from {
+      opacity: 0;
+      transform: translateY(16px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes undoBarOut {
+    to {
+      opacity: 0;
+      transform: translateY(16px);
+    }
+  }
+}
+
+/* The gesture still works with motion off — the row follows the finger and the
+   action is still a button. What is removed is the spring-back, the slide out
+   and the stagger; all three are pure travel with no information in them. The
+   collapse still happens, because leaving the gap open would change the LAYOUT,
+   which is information. */
+@media (prefers-reduced-motion: reduce) {
+  .swipe-body {
+    transition: none;
+  }
+  .swipe-action {
+    transition: none;
+    animation: none;
+  }
+  .swipe-row {
+    transition: max-height 0.01s linear;
+  }
+  .swipe-row-dragging .swipe-body > * {
+    transform: none;
+  }
+  .swipe-row-exiting .swipe-body,
+  .swipe-row-exiting .swipe-body > * {
+    transform: none;
+    opacity: 0;
+  }
+  .undo-bar-leaving,
+  .confirm-popover {
+    animation: none;
+  }
+  .undo-bar-fill {
+    animation: none;
+    transform: scaleX(1);
+  }
 }

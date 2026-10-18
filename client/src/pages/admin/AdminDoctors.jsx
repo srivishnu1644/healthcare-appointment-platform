@@ -79,7 +79,7 @@ export default function AdminDoctors() {
     : doctors;
 
   return (
-    <div className="page">
+    <div className="page page-glass-bg">
       <div className="container stack">
         <div className="page-head row-between">
           <div>

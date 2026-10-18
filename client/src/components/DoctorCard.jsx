@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import api from "../api/client";
 import useDoctorSlots from "../hooks/useDoctorSlots.js";
-import { Avatar, StatusBadge, EmptyState, Spinner, Alert } from "./ui.jsx";
+import { DoctorPhoto, StatusBadge, EmptyState, Spinner, Alert } from "./ui.jsx";
 import { isBookableSlot } from "../utils/appointments";
+import { useAuth } from "../context/AuthContext.jsx";
 import { useToast } from "../context/ToastContext.jsx";
 import {
   currency,
@@ -18,54 +19,42 @@ import {
 /* ------------------------------------------------------------------ *
  *  DoctorCard — used on home + directory                            *
  * ------------------------------------------------------------------ */
-export function DoctorCard({ doctor, showMatch }) {
+export function DoctorCard({ doctor }) {
   return (
-    <div className="card card-hover card-pad stack-sm">
-      <div className="row" style={{ alignItems: "flex-start" }}>
-        <Avatar name={doctor.name} color={doctor.imageColor} size="lg" />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div className="row row-wrap" style={{ gap: "0.4rem" }}>
-            <strong className="truncate">{doctor.name}</strong>
-            {showMatch && doctor.matchScore !== undefined && (
-              <span className="badge badge-success">
-                {Math.round(doctor.matchScore)}% match
-              </span>
-            )}
-            {!doctor.isAcceptingNew && (
-              <span className="badge">Not accepting</span>
-            )}
-          </div>
-          <div className="small muted">{doctor.specialtyName}</div>
-          <div className="tiny muted truncate">
-            {doctor.facilityName} · {doctor.city}
-          </div>
+    <div className="card card-hover">
+    <div className="doc-row" style={{ borderRadius: 14 }}>
+      <DoctorPhoto doctor={doctor} size="lg" />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div className="row row-wrap" style={{ gap: "0.4rem" }}>
+          <strong className="truncate">{doctor.name}</strong>
+          {!doctor.isAcceptingNew && (
+            <span className="badge">Not accepting</span>
+          )}
+        </div>
+        <div className="small" style={{ color: "var(--brand-600)", fontWeight: 600 }}>{doctor.specialtyName}</div>
+        <div className="tiny muted">
+          ⭐ {doctor.rating} ({doctor.reviewCount} reviews)
+        </div>
+        <div className="tiny muted">
+          🕐 {doctor.experience} yrs experience
+        </div>
+        <div className="tiny muted truncate">
+          📍 {doctor.facilityName}{doctor.city ? `, ${doctor.city}` : ""}
         </div>
       </div>
-
-      <div className="row row-wrap small" style={{ gap: "0.75rem" }}>
-        <span>
-          ⭐ {doctor.rating} ({doctor.reviewCount})
-        </span>
-        <span className="muted">{doctor.experience} yrs exp</span>
-        <span className="bold">{currency(doctor.consultationFee)}</span>
+      <div className="fee">
+        <div className="bold">{currency(doctor.consultationFee)}</div>
+        <div className="tiny muted" style={{ marginBottom: "0.5rem" }}>Consultation fee</div>
+        <div className="stack-sm">
+          <Link to={`/doctors/${encodeURIComponent(doctor.id)}?book=1`} className="btn btn-primary btn-sm btn-block">
+            Book Appointment
+          </Link>
+          <Link to={`/doctors/${encodeURIComponent(doctor.id)}`} className="btn btn-ghost btn-sm btn-block">
+            View profile
+          </Link>
+        </div>
       </div>
-
-      <div className="row" style={{ gap: "0.5rem" }}>
-        <Link
-          to={`/doctors/${doctor.id}`}
-          className="btn btn-secondary btn-sm"
-          style={{ flex: 1 }}
-        >
-          View profile
-        </Link>
-        <Link
-          to={`/doctors/${doctor.id}?book=1`}
-          className="btn btn-primary btn-sm"
-          style={{ flex: 1 }}
-        >
-          Book now
-        </Link>
-      </div>
+    </div>
     </div>
   );
 }
@@ -94,6 +83,9 @@ export function DoctorCard({ doctor, showMatch }) {
  * ------------------------------------------------------------------ */
 export function BookingPanel({ doctorId, doctor, onBooked }) {
   const toast = useToast();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { user, booting } = useAuth();
   const { slots, loading, error, refresh } = useDoctorSlots(doctorId, {
     status: "available",
     futureOnly: true,
@@ -139,7 +131,17 @@ export function BookingPanel({ doctorId, doctor, onBooked }) {
   const submit = async () => {
     // Re-checked here, not only on the button: a second click that lands while
     // the first request is in flight must not start a second booking.
-    if (!slot || busy) return;
+    if (!slot || busy || booting) return;
+
+    // Booking is the one action here that needs an account. A visitor is sent
+    // to sign in — this page rides along in `from`, so login brings them
+    // straight back — instead of walking into a 401 they cannot act on.
+    if (!user) {
+      toast.info("Please sign in to book an appointment");
+      navigate("/login", { state: { from: location } });
+      return;
+    }
+
     setBusy(true);
     setBookError(null);
     try {
@@ -157,6 +159,14 @@ export function BookingPanel({ doctorId, doctor, onBooked }) {
       await refresh();
       onBooked?.();
     } catch (err) {
+      // A 401 here means the session ended under us and the request layer's
+      // one refresh attempt was not enough. Signing in again is the only way
+      // forward, so redirect rather than show an error with no action.
+      if (err?.status === 401) {
+        toast.info("Please sign in to book an appointment");
+        navigate("/login", { state: { from: location } });
+        return;
+      }
       setBookError(err?.message || "Could not book this appointment");
       toast.error(err?.message || "Could not book this appointment");
       // A conflict means the slot list is stale; pull the current one so the
@@ -203,7 +213,7 @@ export function BookingPanel({ doctorId, doctor, onBooked }) {
         <div className="row row-wrap" style={{ gap: "0.5rem" }}>
           {booked.id && (
             <Link
-              to={`/appointments/${booked.id}`}
+              to={`/appointments/${encodeURIComponent(booked.id)}`}
               className="btn btn-primary btn-sm"
             >
               View appointment
@@ -429,7 +439,7 @@ export function BookingPanel({ doctorId, doctor, onBooked }) {
             type="button"
             className="btn btn-primary btn-block"
             onClick={submit}
-            disabled={busy}
+            disabled={busy || booting}
           >
             {busy ? (
               <>

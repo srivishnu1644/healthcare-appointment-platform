@@ -109,7 +109,10 @@ export const getRecommended = asyncHandler(async (req, res) => {
     limit: Number(limit) || 6,
   });
   return sendSuccess(res, {
-    recommendations: results.map((r) => ({ ...shape(r.doctor), matchScore: r.score })),
+    // `recommendDoctors` has already ranked and truncated; the internal score
+    // is not returned. It is a private ranking weight, not a "53% match"
+    // the visitor has any way of interpreting.
+    recommendations: results.map((r) => shape(r.doctor)),
   });
 });
 
@@ -311,6 +314,35 @@ export const updateSlot = asyncHandler(async (req, res) => {
 });
 
 /* ------------------------------------------------------------------ *
+ *  DELETE /api/doctors/:id/slots  (bulk remove)                       *
+ * ------------------------------------------------------------------ */
+/**
+ * DELETE /api/doctors/:id/slots
+ *
+ * Bulk removal of published slots, by id. The ids are the payload rather than
+ * the date because a slot is what is being removed: a day can hold twenty-four
+ * of them and the provider has usually picked a few, not the whole day.
+ *
+ * The service refuses the whole request when any id still carries an
+ * appointment, so the failure this reports is the interesting one — the client
+ * renders `SLOT_HAS_APPOINTMENT` against the slot the provider just booked,
+ * which is the only way this can fail in normal use.
+ */
+export const deleteSlots = asyncHandler(async (req, res) => {
+  const result = await slotService.deleteSlots({
+    actor: req.user,
+    doctorId: req.params.id,
+    slotIds: req.body?.slotIds,
+  });
+
+  return sendSuccess(
+    res,
+    result,
+    `${result.deletedCount} slot(s) deleted`,
+  );
+});
+
+/* ------------------------------------------------------------------ *
  *  POST /api/doctors/:id/slots  (bulk generate)                      *
  * ------------------------------------------------------------------ */
 /**
@@ -452,5 +484,3 @@ export const doctorServices = asyncHandler(async (req, res) => {
     count: list.length,
   });
 });
-
-export { shape as shapeDoctor };

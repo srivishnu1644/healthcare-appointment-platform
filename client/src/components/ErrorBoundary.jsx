@@ -1,5 +1,4 @@
 import { Component } from "react";
-import { EmptyState } from "./ui.jsx";
 
 /**
  * Top-level error boundary.
@@ -14,19 +13,29 @@ import { EmptyState } from "./ui.jsx";
  *     visible `Alert`; those never reach a boundary, because they are values in
  *     state rather than thrown errors. Only a genuine crash lands here.
  *   * Show the error to a patient. A stack trace or an API message can name
- *     records, endpoints and internal identifiers, so the fallback stays
- *     generic. The detail is written to the console for a developer, and is
- *     only rendered when the build is a development one.
+ *     records, endpoints and internal identifiers, so the fallback carries a
+ *     heading, one sentence and a way out, and nothing else. The detail goes
+ *     to the console in `componentDidCatch`, which is the only channel a
+ *     developer needs and the only one that cannot leak into a screenshot.
+ *   * Claim more than it knows. The fallback states one fact — something threw
+ *     while this screen was rendering — because that is the only fact a
+ *     boundary holds. A paragraph here once added "Reloading usually fixes it"
+ *     and "your appointments and account are unaffected": the first is a guess
+ *     about someone else's situation and the second is a promise about data
+ *     this component never inspects. Neither can be verified from inside an
+ *     error boundary, so neither is said.
+ *   * Offer a choice the user cannot really make. "Reload" and "Try again" both
+ *     mean "get this screen working again", and only the reload works when the
+ *     module itself failed to load. Two buttons split attention between them
+ *     and make the reliable one look like half of an option, so there is one.
  *
- * Recovery offers two actions on purpose: "Try again" re-renders the tree and
- * is the right move when the crash came from transient state, while "Reload"
- * is the dependable one when the module itself was the problem.
+ * Recovery is a single full-page reload: it is the only action that clears both
+ * a transient state crash and a module that failed to evaluate.
  */
 export class ErrorBoundary extends Component {
   constructor(props) {
     super(props);
     this.state = { error: null };
-    this.handleRetry = this.handleRetry.bind(this);
     this.handleReload = this.handleReload.bind(this);
   }
 
@@ -37,11 +46,7 @@ export class ErrorBoundary extends Component {
   componentDidCatch(error, info) {
     // Kept in the console rather than the UI: it is useful to a developer and
     // is exactly the kind of thing that must not reach a patient.
-    console.error("[MediCare] render error", error, info?.componentStack);
-  }
-
-  handleRetry() {
-    this.setState({ error: null });
+    console.error("[BookMyDoc] render error", error, info?.componentStack);
   }
 
   handleReload() {
@@ -52,52 +57,53 @@ export class ErrorBoundary extends Component {
     const { error } = this.state;
     if (!error) return this.props.children;
 
-    const devOnly = import.meta.env.DEV;
-
     return (
-      <div className="container" style={{ padding: "3rem 1rem" }}>
-        <div className="card">
-          <div className="card-body">
-            <EmptyState
-              icon="🛟"
-              title="Something went wrong on this screen"
-              message={
-                "The page ran into a problem it could not recover from. Reloading " +
-                "usually fixes it. Your appointments and account are unaffected."
-              }
-              action={
-                <div
-                  style={{
-                    display: "flex",
-                    gap: "0.5rem",
-                    justifyContent: "center",
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <button type="button" className="btn btn-primary" onClick={this.handleReload}>
-                    Reload the page
-                  </button>
-                  <button type="button" className="btn btn-secondary" onClick={this.handleRetry}>
-                    Try again
-                  </button>
-                  <a className="btn btn-ghost" href="/">
-                    Go to home
-                  </a>
-                </div>
-              }
-            />
+      <div className="page-glass-bg errpage">
+        <div className="container">
+          <div className="errpage-inner">
+            <div className="errpage-mark" aria-hidden="true">
+              🛟
+            </div>
 
-            {devOnly && (
-              <details style={{ marginTop: "1rem" }}>
-                <summary className="small">Error details (development only)</summary>
-                <pre
-                  className="small"
-                  style={{ whiteSpace: "pre-wrap", marginTop: "0.5rem" }}
-                >
-                  {String(error?.stack || error?.message || error)}
-                </pre>
-              </details>
-            )}
+            <h1 className="errpage-title">Something went wrong on this screen</h1>
+
+            {/* Says what a boundary can actually know, which is narrow: that
+                something threw while this screen was rendering. The old copy
+                went further than that - "reloading usually fixes it" and
+                "your appointments and account are unaffected" - and both were
+                assertions this component has no way to check. What is left is
+                a true statement plus the action that follows from it. */}
+            <p className="errpage-lede">
+              Something broke while this screen was drawing. Reloading it
+              usually clears that up.
+            </p>
+
+            {/* ONE recovery action, deliberately.
+
+                This offered "Reload the page" and "Try again" side by side.
+                They are not really a choice: a re-render only helps when the
+                crash came from transient state, and does nothing at all when
+                the module itself failed to load - in which case tapping it
+                flashes the same screen straight back and invites a second tap.
+                A reload covers both cases, so offering the other one alongside
+                it split attention between two buttons that mean the same thing
+                and made the reliable one look like half of an option. */}
+            <div className="errpage-actions">
+              <button
+                type="button"
+                className="btn btn-primary btn-lg"
+                onClick={this.handleReload}
+              >
+                Reload the page
+              </button>
+            </div>
+
+            {/* A real route out, not decoration: a crash replaces the whole
+                shell, so the header and every nav link are gone. This is the
+                only way back for someone the buttons do not help. */}
+            <a className="errpage-home" href="/">
+              Go to home
+            </a>
           </div>
         </div>
       </div>

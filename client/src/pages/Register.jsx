@@ -32,7 +32,7 @@ export default function Register() {
         password: form.password,
         phone: form.phone.trim(),
       });
-      toast.success("Account created — welcome to MediCare");
+      toast.success("Account created — welcome to BookMyDoc");
       // Registration issues a session, so the new account goes straight to its
       // own dashboard rather than the public landing page.
       navigate(homeFor(data?.user?.role), { replace: true });
@@ -44,17 +44,22 @@ export default function Register() {
   };
 
   return (
-    <div className="page">
-      <div
-        className="container"
-        style={{ maxWidth: 440, paddingTop: "2rem", paddingBottom: "3rem" }}
-      >
+    <div className="page page-glass-bg">
+      <div className="container auth-wrap">
         <div className="card card-pad stack">
-          <div>
-            <h1 style={{ marginBottom: "0.2rem" }}>Create your account</h1>
-            <p className="small muted">
-              Book and manage appointments with doctors near you.
-            </p>
+          <div className="auth-brand">
+            <img
+              className="mark"
+              src="/logo-mark.svg"
+              alt=""
+              width="34"
+              height="34"
+            />
+            <strong style={{ fontSize: "1.1rem" }}>BookMyDoc</strong>
+          </div>
+          <div className="center">
+            <h1 style={{ marginBottom: "0.2rem" }}>Create Account</h1>
+            <p className="small muted">Join us for better healthcare</p>
           </div>
 
           {error && <Alert tone="danger">{error}</Alert>}
@@ -62,12 +67,12 @@ export default function Register() {
           <form onSubmit={submit} className="stack">
             <div className="field">
               <label className="label" htmlFor="name">
-                Full name
+                Full Name
               </label>
               <input
                 id="name"
                 className="input"
-                placeholder="Rahul Verma"
+                placeholder="Enter your full name"
                 value={form.name}
                 onChange={set("name")}
                 minLength={2}
@@ -77,13 +82,13 @@ export default function Register() {
 
             <div className="field">
               <label className="label" htmlFor="email">
-                Email
+                Email Address
               </label>
               <input
                 id="email"
                 type="email"
                 className="input"
-                placeholder="you@example.com"
+                placeholder="Enter your email"
                 value={form.email}
                 onChange={set("email")}
                 required
@@ -111,7 +116,7 @@ export default function Register() {
                 id="password"
                 type="password"
                 className="input"
-                placeholder="At least 6 characters"
+                placeholder="Create a password"
                 value={form.password}
                 onChange={set("password")}
                 minLength={6}
@@ -124,12 +129,12 @@ export default function Register() {
               className="btn btn-primary btn-block"
               disabled={busy}
             >
-              {busy ? <Spinner /> : "Create account"}
+              {busy ? <Spinner /> : "Sign Up"}
             </button>
           </form>
 
           <p className="small center muted">
-            Already registered? <Link to="/login">Sign in</Link>
+            Already have an account? <Link to="/login">Login</Link>
           </p>
         </div>
       </div>

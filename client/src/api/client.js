@@ -24,10 +24,10 @@
 
 const BASE = import.meta.env.VITE_API_URL || "/api";
 
-const ACCESS_KEY = "medicare_token";
-const REFRESH_KEY = "medicare_refresh_token";
+const ACCESS_KEY = "bookmydoc_token";
+const REFRESH_KEY = "bookmydoc_refresh_token";
 
-export class ApiError extends Error {
+class ApiError extends Error {
   constructor(message, status, code, details) {
     super(message);
     this.name = "ApiError";
@@ -52,7 +52,7 @@ export const setTokens = ({ token, refreshToken }) => {
 export const clearToken = () => {
   localStorage.removeItem(ACCESS_KEY);
   localStorage.removeItem(REFRESH_KEY);
-  localStorage.removeItem("medicare_user");
+  localStorage.removeItem("bookmydoc_user");
 };
 
 /** Called when a refresh fails for good, so the app can drop to the login screen. */
@@ -105,7 +105,7 @@ const performRefresh = async () => {
  * Refresh the session, coalescing concurrent callers onto one request.
  * @returns {Promise<{token: string}>}
  */
-export const refreshSession = () => {
+const refreshSession = () => {
   if (!refreshInFlight) {
     refreshInFlight = performRefresh().finally(() => {
       refreshInFlight = null;
@@ -194,7 +194,7 @@ const request = async (
 /* ------------------------------------------------------------------ *
  *  Query string helper                                                *
  * ------------------------------------------------------------------ */
-export const qs = (params = {}) => {
+const qs = (params = {}) => {
   const usable = Object.entries(params).filter(
     ([, v]) => v !== undefined && v !== null && v !== "",
   );
@@ -276,6 +276,20 @@ export const api = {
   generateSlots: (doctorId, payload) =>
     request(`/doctors/${doctorId}/slots`, { method: "POST", body: payload }),
 
+  /**
+   * Remove published slots, by id.
+   *
+   * Ids rather than a date, because a day holds many slots and the provider has
+   * usually picked a few. All-or-nothing: if any slot still carries an
+   * appointment the whole call is refused with `SLOT_HAS_APPOINTMENT` and
+   * nothing is removed, so a caller must not treat a rejection as partial.
+   */
+  deleteSlots: (doctorId, slotIds) =>
+    request(`/doctors/${doctorId}/slots`, {
+      method: "DELETE",
+      body: { slotIds },
+    }),
+
   // --- appointments ---
   appointments: (params) => request(`/appointments${qs(params)}`),
   appointment: (id) => request(`/appointments/${id}`),
@@ -297,18 +311,41 @@ export const api = {
       body: { status, note },
     }),
   checkIn: (id) => request(`/appointments/${id}/check-in`, { method: "POST" }),
-  queue: (params) => request(`/appointments/queue${qs(params)}`),
-  // Promotes the next waiting patient. Idempotent: while someone is already in
-  // consultation the server returns that same person, so a double click or a
-  // retry cannot skip anybody.
-  callNext: (body) => request("/appointments/queue/next", { method: "POST", body }),
 
   // --- notifications ---
   notifications: () => request("/notifications"),
   markNotificationsRead: () =>
     request("/notifications/read-all", { method: "PATCH" }),
-  markNotificationRead: (id) =>
-    request(`/notifications/${id}/read`, { method: "PATCH" }),
+  /**
+   * Set one notification's read state.
+   *
+   * `read` is not decoration: the swipe gesture TOGGLES, so a row that is
+   * already read is sent back to the unread pile. It is sent explicitly rather
+   * than left to the server to infer, so two rapid swipes on one row mean what
+   * the user did rather than what the row happened to be at the time.
+   */
+  markNotificationRead: (id, read = true) =>
+    request(`/notifications/${id}/read`, { method: "PATCH", body: { read } }),
+  /**
+   * Dismiss one notification (the slide-to-remove gesture).
+   *
+   * DELETE at the wire level because that is what the user means, but the
+   * server only stamps `deleted_at` — the row is recoverable, which is what
+   * makes the undo in the UI honest rather than decorative.
+   */
+  removeNotification: (id) => request(`/notifications/${id}`, { method: "DELETE" }),
+  /**
+   * Dismiss many at once. `scope: "read"` clears only what has already been
+   * read, which is the everyday case and is offered alongside the full clear.
+   */
+  removeNotifications: (params) =>
+    request(`/notifications${qs(params)}`, { method: "DELETE" }),
+  /** Undo for `removeNotification`. */
+  restoreNotification: (id) =>
+    request(`/notifications/${id}/restore`, { method: "POST" }),
+  /** Undo for `removeNotifications`. */
+  restoreNotifications: () =>
+    request("/notifications/restore-all", { method: "POST" }),
   runReminderSweep: () =>
     request("/notifications/reminders/sweep", { method: "POST" }),
 
