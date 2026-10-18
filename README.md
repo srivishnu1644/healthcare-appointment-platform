@@ -1,8 +1,8 @@
+
+
 <p align="center">
   <img src="client/public/logo-mark.svg" alt="BookMyDoc" width="100" />
-</p>
-
-# BookMyDoc v2 — Healthcare Appointment Platform
+</p> # BookMyDoc v2 — Healthcare Appointment Platform
 
 A patient-centric healthcare appointment platform: discover doctors, check live
 availability, book, reschedule and cancel appointments, check in to a live
