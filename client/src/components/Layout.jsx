@@ -359,37 +359,13 @@ export function Header({ unread = 0 }) {
 
         {user ? (
           <>
-            {role === "patient" && (
-              <Link
-                to="/notifications"
-                className="btn btn-ghost btn-icon hide-sm"
-                title="Notifications"
-                style={{ position: "relative" }}
-              >
-                🔔
-                {unread > 0 && (
-                  <span
-                    style={{
-                      position: "absolute",
-                      top: 2,
-                      right: 2,
-                      minWidth: 15,
-                      height: 15,
-                      padding: "0 3px",
-                      borderRadius: 999,
-                      background: "var(--danger)",
-                      color: "#fff",
-                      fontSize: "0.62rem",
-                      fontWeight: 700,
-                      display: "grid",
-                      placeItems: "center",
-                    }}
-                  >
-                    {unread > 9 ? "9+" : unread}
-                  </span>
-                )}
-              </Link>
-            )}
+            {/* No bell. Notifications used to be the one control a patient got
+                that nobody else did, which put a bare 🔔 on a bar otherwise made
+                entirely of labelled links — and put the same page on screen
+                twice on a row, next to the "Notifications" link already in
+                `NAV.patient`. Patients still reach it from that link on a
+                desktop and from the drawer on a phone, so nothing is stranded;
+                the unread count survives there too. */}
 
             {/* The account menu. One control instead of an identity block and
                 a sign-out button, which is what lets the identity survive a
@@ -549,8 +525,9 @@ export function Header({ unread = 0 }) {
                     style={{ animationDelay: `${40 + i * 35}ms` }}
                   >
                     {l.label}
-                    {/* Phones hide the header bell, so this is the only place
-                        the unread count survives at ≤600px. */}
+                    {/* The unread count has nowhere else to live now that the
+                        bar carries no bell, so this badge is the single place
+                        it appears. */}
                     {l.to === "/notifications" && unread > 0 && (
                       <span className="drawer-badge">
                         {unread > 9 ? "9+" : unread}
