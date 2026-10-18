@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="client/public/logo-mark.svg" alt="BookMyDoc" width="240" />
+  <img src="client/public/logo-mark.svg" alt="BookMyDoc" width="100" />
 </p>
 
 # BookMyDoc v2 — Healthcare Appointment Platform
